@@ -53,7 +53,7 @@ An operator expects duplicate webhooks, running issues, and agent failures to av
 **Acceptance Scenarios**:
 
 1. **Given** a webhook delivery already processed in the current service lifetime, **When** the same delivery is received again, **Then** Symphony returns duplicate status and performs no additional label update, comment, or run dispatch.
-2. **Given** an issue already labeled `soc::claimed` or `soc::running`, **When** `/soc run` is received, **Then** Symphony rejects duplicate queueing and posts an explanatory comment.
+2. **Given** an issue already labeled with a Symphony lifecycle label such as `soc::queued`, `soc::claimed`, `soc::running`, `soc::waiting-input`, `soc::human-review`, `soc::failed`, or `soc::done`, **When** `/soc run` is received, **Then** Symphony rejects duplicate queueing and posts an explanatory comment.
 3. **Given** a GitLab issue whose agent run fails, **When** the orchestrator handles the failure, **Then** Symphony transitions the issue to `soc::failed` and posts an adapter-owned failure summary.
 
 ---
@@ -94,7 +94,7 @@ A repository maintainer configures GitLab token scopes, webhook secrets, labels,
 - **FR-004**: Symphony MUST validate GitLab webhook requests using the configured secret before parsing commands or performing writeback.
 - **FR-005**: Symphony MUST parse `/soc run`, `/soc status`, `/soc retry`, and `/soc cancel` only when commands appear at the beginning of a line.
 - **FR-006**: Symphony MUST treat `/soc run` as the only dispatch-triggering command in this phase.
-- **FR-007**: Symphony MUST reject `/soc run` for closed issues and issues already claimed or running.
+- **FR-007**: Symphony MUST reject `/soc run` for closed issues and issues already in a Symphony lifecycle state that should not create a duplicate run.
 - **FR-008**: Symphony MUST perform GitLab comments and label mutations only through the GitLab adapter layer.
 - **FR-009**: Symphony MUST NOT require or pass GitLab write tokens to Codex agent turns.
 - **FR-010**: Symphony MUST transition labels for queue, running, waiting-input, human-review, and failed lifecycle states through adapter-controlled writeback.

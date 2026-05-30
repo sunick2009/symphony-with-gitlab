@@ -274,20 +274,22 @@ defmodule SymphonyElixir.GitLabTest do
     refute_receive {:gitlab_comment, "42", _body}
   end
 
-  test "webhook rejects duplicate run commands for claimed or running issues" do
+  test "webhook rejects duplicate run commands for active or terminal lifecycle issues" do
     configure_gitlab_webhook_test()
 
-    headers = %{
-      "x-gitlab-token" => "secret",
-      "x-gitlab-event" => "Note Hook",
-      "x-gitlab-event-uuid" => "event-running"
-    }
+    for {label, index} <- Enum.with_index(["soc::queued", "soc::claimed", "soc::running", "soc::waiting-input", "soc::human-review", "soc::failed", "soc::done"]) do
+      headers = %{
+        "x-gitlab-token" => "secret",
+        "x-gitlab-event" => "Note Hook",
+        "x-gitlab-event-uuid" => "event-lifecycle-#{index}"
+      }
 
-    assert {:error, :issue_already_running} =
-             Webhook.handle(headers, note_payload("/soc run", labels: ["soc::running"]))
+      assert {:error, :issue_already_in_lifecycle} =
+               Webhook.handle(headers, note_payload("/soc run", labels: [label]))
 
-    assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already claimed or running."}
-    refute_receive {:gitlab_labels, "42", _add, _remove}
+      assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
+      refute_receive {:gitlab_labels, "42", _add, _remove}
+    end
   end
 
   test "webhook parses recognized but unimplemented commands without dispatching" do
@@ -344,7 +346,7 @@ defmodule SymphonyElixir.GitLabTest do
       "issue" => %{
         "iid" => 42,
         "state" => Keyword.get(opts, :issue_state, "opened"),
-        "labels" => Keyword.get(opts, :labels, ["soc::queued"])
+        "labels" => Keyword.get(opts, :labels, [])
       }
     }
   end

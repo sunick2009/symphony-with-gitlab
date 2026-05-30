@@ -9,6 +9,15 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   @idempotency_table :symphony_gitlab_webhook_events
   @not_implemented_commands ~w(status retry cancel)
+  @run_blocking_labels [
+    "soc::queued",
+    "soc::claimed",
+    "soc::running",
+    "soc::waiting-input",
+    "soc::human-review",
+    "soc::failed",
+    "soc::done"
+  ]
 
   @spec handle(map(), map()) :: {:ok, atom()} | {:error, term()}
   def handle(headers, payload) when is_map(headers) and is_map(payload) do
@@ -70,7 +79,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
   defp handle_run_command(payload) do
     with {:ok, issue_iid} <- issue_iid(payload),
          :ok <- ensure_issue_open(payload, issue_iid),
-         :ok <- ensure_issue_not_already_running(payload, issue_iid),
+         :ok <- ensure_issue_not_already_in_lifecycle(payload, issue_iid),
          :ok <- Adapter.transition_issue_labels(issue_iid, "soc::queued"),
          :ok <- Adapter.create_comment(issue_iid, "Symphony accepted `/soc run` and queued this issue for an agent run.") do
       {:ok, :handled}
@@ -88,12 +97,12 @@ defmodule SymphonyElixir.GitLab.Webhook do
     end
   end
 
-  defp ensure_issue_not_already_running(payload, issue_iid) do
+  defp ensure_issue_not_already_in_lifecycle(payload, issue_iid) do
     labels = issue_labels(payload)
 
-    if Enum.any?(labels, &(normalize_label(&1) in ["soc::claimed", "soc::running"])) do
-      Adapter.create_comment(issue_iid, "Symphony cannot queue this issue because it is already claimed or running.")
-      {:error, :issue_already_running}
+    if Enum.any?(labels, &(normalize_label(&1) in @run_blocking_labels)) do
+      Adapter.create_comment(issue_iid, "Symphony cannot queue this issue because it is already in a Symphony lifecycle state.")
+      {:error, :issue_already_in_lifecycle}
     else
       :ok
     end

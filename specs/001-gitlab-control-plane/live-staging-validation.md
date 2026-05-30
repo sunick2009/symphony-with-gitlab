@@ -438,7 +438,7 @@ Expected evidence:
 - The issue remains in `soc::human-review`.
 - `duplicate-verification.json` reports `Pass` after the observation window.
 
-Note: the current spec guarantees in-memory duplicate webhook delivery handling and rejects duplicate run commands for `soc::claimed` or `soc::running`. It does not yet reject `/soc run` on `soc::human-review`. If this live check creates a second run after terminal handoff, record it as a Stage 2 gap rather than changing scope silently.
+Note: the current implementation rejects `/soc run` for issues that already have a Symphony lifecycle label such as `soc::queued`, `soc::claimed`, `soc::running`, `soc::waiting-input`, `soc::human-review`, `soc::failed`, or `soc::done`. If this live check creates a second run after terminal handoff, record it as a Stage 2 failure.
 
 ## Failure Path Validation
 
@@ -601,5 +601,5 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh assert-complete
 - Live webhook delivery cannot be proven until `GITLAB_WEBHOOK_PUBLIC_URL` reaches the local or staging Symphony server.
 - The current implementation validates GitLab `X-Gitlab-Token`; GitLab documentation recommends signing tokens for new webhooks when supported. Signing-token validation is not in the Stage 1 spec and should be treated as future hardening.
 - In-memory webhook idempotency resets on Symphony restart.
-- Duplicate `/soc run` after terminal `soc::human-review` may reveal a Stage 2 gap because Stage 1 explicitly rejects claimed/running states, not all terminal states.
+- Duplicate `/soc run` after terminal `soc::human-review` is expected to be rejected by lifecycle-label duplicate protection. Treat a second run as a Stage 2 failure.
 - Remote worker token boundary remains unverified unless Stage 2 uses a remote worker.
