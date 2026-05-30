@@ -67,7 +67,7 @@ Set these variables in the shell that starts Symphony and runs the validation co
 
 ```bash
 export GITLAB_ENDPOINT=https://gitlab.com
-export GITLAB_PROJECT_ID=<numeric staging project id>
+export GITLAB_PROJECT_ID=<numeric staging project id, optional when slug is set>
 export GITLAB_PROJECT_SLUG=<group-or-namespace/staging-project>
 export GITLAB_API_TOKEN=<project bot token, secret, do not print>
 export GITLAB_WEBHOOK_SECRET=<webhook secret, secret, do not print>
@@ -76,7 +76,7 @@ export STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 export STAGE2_RUN_ID=symphony-stage2-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-For local convenience, copy `elixir/.env.example` to `elixir/.env` and fill in values there. The helper script automatically loads `elixir/.env` when present. To use a different file, set `STAGE2_ENV_FILE=/path/to/file` before running the helper.
+For local convenience, copy `elixir/.env.example` to `elixir/.env` and fill in values there. The helper script automatically loads `elixir/.env` when present. To use a different file, set `STAGE2_ENV_FILE=/path/to/file` before running the helper. `GITLAB_PROJECT_ID` is optional when `GITLAB_PROJECT_SLUG` is set because GitLab project APIs accept URL-encoded project paths.
 
 Required token properties:
 
@@ -190,7 +190,7 @@ Equivalent manual checks:
 
 ```bash
 test -n "${GITLAB_ENDPOINT:-}" && echo "GITLAB_ENDPOINT=<set>"
-test -n "${GITLAB_PROJECT_ID:-}" && echo "GITLAB_PROJECT_ID=<set>"
+test -n "${GITLAB_PROJECT_ID:-}" && echo "GITLAB_PROJECT_ID=<set optional>"
 test -n "${GITLAB_PROJECT_SLUG:-}" && echo "GITLAB_PROJECT_SLUG=<set>"
 test -n "${GITLAB_API_TOKEN:-}" && echo "GITLAB_API_TOKEN=<set>"
 test -n "${GITLAB_WEBHOOK_SECRET:-}" && echo "GITLAB_WEBHOOK_SECRET=<set>"

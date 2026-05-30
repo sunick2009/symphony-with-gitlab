@@ -39,14 +39,14 @@ Usage:
 
 Required environment, values must not be printed:
   GITLAB_ENDPOINT
-  GITLAB_PROJECT_ID
   GITLAB_PROJECT_SLUG
   GITLAB_API_TOKEN
-  GITLAB_WEBHOOK_SECRET
-  GITLAB_WEBHOOK_PUBLIC_URL
   STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 
 Optional:
+  GITLAB_PROJECT_ID
+  GITLAB_WEBHOOK_SECRET
+  GITLAB_WEBHOOK_PUBLIC_URL
   STAGE2_ENV_FILE
   STAGE2_RUN_ID
   STAGE2_RUNTIME_DIR
@@ -76,15 +76,12 @@ require_command() {
   }
 }
 
-require_env() {
+require_base_env() {
   local missing=0
   for name in \
     GITLAB_ENDPOINT \
-    GITLAB_PROJECT_ID \
     GITLAB_PROJECT_SLUG \
-    GITLAB_API_TOKEN \
-    GITLAB_WEBHOOK_SECRET \
-    GITLAB_WEBHOOK_PUBLIC_URL
+    GITLAB_API_TOKEN
   do
     if [ -z "${!name:-}" ]; then
       echo "missing required environment variable: ${name}" >&2
@@ -96,6 +93,26 @@ require_env() {
     echo "STAGE2_CONFIRM_DISPOSABLE_PROJECT must be set to yes" >&2
     missing=1
   fi
+
+  if [ "$missing" -ne 0 ]; then
+    exit 1
+  fi
+}
+
+require_webhook_env() {
+  local missing=0
+
+  require_base_env
+
+  for name in \
+    GITLAB_WEBHOOK_SECRET \
+    GITLAB_WEBHOOK_PUBLIC_URL
+  do
+    if [ -z "${!name:-}" ]; then
+      echo "missing required environment variable: ${name}" >&2
+      missing=1
+    fi
+  done
 
   if [ "$missing" -ne 0 ]; then
     exit 1
@@ -115,8 +132,16 @@ api_url() {
   local path="$1"
   printf '%s/api/v4/projects/%s%s' \
     "${GITLAB_ENDPOINT%/}" \
-    "${GITLAB_PROJECT_ID}" \
+    "$(project_ref)" \
     "$path"
+}
+
+project_ref() {
+  if [ -n "${GITLAB_PROJECT_ID:-}" ]; then
+    printf '%s' "$GITLAB_PROJECT_ID"
+  else
+    jq -rn --arg value "$GITLAB_PROJECT_SLUG" '$value | @uri'
+  fi
 }
 
 curl_json() {
@@ -151,7 +176,7 @@ print_safe_env() {
 }
 
 preflight() {
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -173,7 +198,7 @@ preflight() {
 }
 
 ensure_labels() {
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -225,7 +250,7 @@ sanitize_webhooks() {
 }
 
 list_webhooks() {
-  require_env
+  require_webhook_env
   require_tools
   init_dirs
 
@@ -276,7 +301,7 @@ write_webhook_settings() {
 }
 
 ensure_webhook() {
-  require_env
+  require_webhook_env
   require_tools
   init_dirs
 
@@ -308,7 +333,7 @@ write_workflow() {
     exit 1
   fi
 
-  require_env
+  require_webhook_env
   init_dirs
 
   if [ "$mode" = "success" ]; then
@@ -392,7 +417,7 @@ issue_iid() {
 
 create_issue() {
   local kind="$1"
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -412,7 +437,7 @@ create_issue() {
 
 post_run() {
   local kind="$1"
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -433,7 +458,7 @@ post_run() {
 
 poll_issue() {
   local kind="$1"
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -474,7 +499,7 @@ poll_issue() {
 
 fetch_notes() {
   local kind="$1"
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
@@ -486,7 +511,7 @@ fetch_notes() {
 }
 
 verify_duplicate() {
-  require_env
+  require_base_env
   require_tools
   init_dirs
 
