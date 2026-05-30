@@ -72,6 +72,7 @@ export GITLAB_PROJECT_SLUG=<group-or-namespace/staging-project>
 export GITLAB_API_TOKEN=<project bot token, secret, do not print>
 export GITLAB_WEBHOOK_SECRET=<webhook secret, secret, do not print>
 export GITLAB_WEBHOOK_PUBLIC_URL=https://<public-url>/api/v1/gitlab/webhook
+export GITLAB_STATE_PATH=/tmp/symphony-stage2/gitlab-control-plane-state.json
 export STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 export STAGE2_RUN_ID=symphony-stage2-$(date -u +%Y%m%dT%H%M%SZ)
 ```
@@ -84,7 +85,7 @@ Required token properties:
 - Scope: `api`.
 - Role: Maintainer is the expected role because the validation mutates issue labels and creates issue comments.
 - Forbidden scopes: `write_repository`, registry scopes, runner management scopes, and GitLab Duo scopes.
-- Expiration: short-lived, with revocation planned immediately after Stage 2.
+- Expiration: short-lived, with revocation planned immediately after Stage 2 or Stage 3 validation.
 
 Required labels:
 
@@ -610,6 +611,7 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh assert-complete
 
 - Live webhook delivery cannot be proven until `GITLAB_WEBHOOK_PUBLIC_URL` reaches the local or staging Symphony server.
 - The current implementation validates GitLab `X-Gitlab-Token`; GitLab documentation recommends signing tokens for new webhooks when supported. Signing-token validation is not in the Stage 1 spec and should be treated as future hardening.
-- In-memory webhook idempotency resets on Symphony restart.
+- Stage 3 replaces process-local webhook idempotency with a persistent local state file. Replay protection now survives process restart when `tracker.state_path` is retained.
+- Persistent state is single-deployment state. Multi-replica webhook receivers still require a shared durable store before production use.
 - Duplicate `/soc run` after terminal `soc::human-review` is expected to be rejected by lifecycle-label duplicate protection. Treat a second run as a Stage 2 failure.
 - Remote worker token boundary remains unverified unless Stage 2 uses a remote worker.

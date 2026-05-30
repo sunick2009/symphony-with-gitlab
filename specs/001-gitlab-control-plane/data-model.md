@@ -36,8 +36,27 @@ Fields:
 Validation rules:
 
 - Secret must match configured `tracker.webhook_secret`.
-- Duplicate event UUID or fallback object ID is processed at most once per service lifetime.
+- Duplicate event UUID or fallback object ID is processed at most once across process restarts when persistent state is retained.
 - Unsupported event types are ignored after validation.
+- Processing outcome is recorded as handled, ignored, duplicate, or failed without storing the webhook secret or full issue body.
+
+## Persistent Control-Plane State
+
+Represents local durable audit and idempotency state for one Symphony GitLab control-plane deployment.
+
+Fields:
+
+- `schema_version`: State file schema version.
+- `webhook_events`: Map of delivery keys to event type, issue IID when known, status, timestamps, and sanitized result.
+- `writebacks`: Map of operation keys to operation type, issue IID, lifecycle or comment key, status, attempt count, timestamps, and sanitized final reason.
+- `issue_runs`: Map of issue IID to latest known lifecycle marker and run-related timestamps.
+
+Validation rules:
+
+- State must be written atomically.
+- State must not contain GitLab API tokens, webhook secrets, raw issue descriptions, raw comments, agent prompts, or agent output.
+- Malformed or unreadable state is treated as an operational error rather than silently discarding idempotency.
+- Completed writeback records suppress duplicate lifecycle comments and duplicate lifecycle transitions after restart.
 
 ## Bot Command
 
@@ -84,4 +103,26 @@ Validation rules:
 
 - Writeback requires GitLab adapter configuration.
 - Codex agent turns must not hold GitLab write tokens.
-- Writeback failures must be logged or surfaced in tests.
+- Writeback failures must be retried only within configured bounds.
+- Retry exhaustion must be recorded in persistent state.
+- Completed lifecycle writebacks must be idempotent across process restarts.
+
+## Writeback Attempt
+
+Represents one attempt to perform a GitLab API mutation.
+
+Fields:
+
+- `operation_key`: Stable key for the lifecycle transition or lifecycle comment.
+- `issue_iid`: GitLab issue IID.
+- `operation`: Label transition or issue comment.
+- `attempt`: Positive attempt number.
+- `status`: Success, retryable failure, permanent failure, or exhausted failure.
+- `reason`: Sanitized status or error category.
+- `recorded_at`: UTC timestamp.
+
+Validation rules:
+
+- Attempts must be bounded by configuration.
+- Retryable statuses are transport errors, HTTP 429, and HTTP 5xx.
+- Permission and validation errors are surfaced without unbounded retry.

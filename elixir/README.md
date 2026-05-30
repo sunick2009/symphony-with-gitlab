@@ -174,6 +174,9 @@ tracker:
   api_key: $GITLAB_API_TOKEN
   project_slug: group/project
   webhook_secret: $GITLAB_WEBHOOK_SECRET
+  state_path: /var/lib/symphony/gitlab-control-plane-state.json
+  writeback_max_attempts: 3
+  writeback_base_backoff_ms: 250
   active_states: ["soc::queued"]
   terminal_states: ["soc::done", "soc::failed"]
 ```
@@ -199,12 +202,21 @@ Create these labels in the GitLab project before enabling the workflow:
 
 Use a GitLab token that can read project issues, create issue comments, and
 update issue labels. For GitLab personal, project, or group access tokens, this
-typically requires the `api` scope. Store the token outside the repository:
+typically requires the `api` scope. GitLab documents `read_api` as read-only,
+so it is not sufficient for adapter-owned comments or label mutation. Do not
+grant `write_repository`, registry, runner, or AI feature scopes for this
+control plane. Store the token outside the repository:
 
 ```bash
 export GITLAB_API_TOKEN=...
 export GITLAB_WEBHOOK_SECRET=...
 ```
+
+For project access tokens, prefer a project-scoped bot token with the minimum
+project role that can update issues. GitLab documents token rotation for
+project access tokens; rotation immediately revokes the old token, so update
+the Symphony secret and restart or reload the deployment before sending more
+webhooks.
 
 Start Symphony with the HTTP server enabled, then configure a GitLab project
 webhook:
@@ -219,6 +231,36 @@ Webhook settings:
 - Secret token: the same value as `GITLAB_WEBHOOK_SECRET`
 - Events: issue comment / note events. Issue events may be enabled, but they do
   not dispatch runs in this phase.
+- TLS should terminate at a stable staging or production endpoint. Tunnels are
+  acceptable for disposable staging, but not for production.
+- The current receiver validates GitLab's `X-Gitlab-Token` secret token. Rotate
+  this secret independently from `GITLAB_API_TOKEN` if either value is exposed.
+
+Persistent control-plane state:
+
+- `tracker.state_path` stores webhook replay suppression, lifecycle writeback
+  idempotency, issue run-state markers, and sanitized audit records.
+- If omitted, the state file defaults to `.gitlab-control-plane-state.json`
+  under `workspace.root`.
+- For longer-running staging or production, set `tracker.state_path` to a
+  durable path outside ephemeral workspace cleanup, such as
+  `/var/lib/symphony/gitlab-control-plane-state.json`.
+- Back up this file with the same retention expectations as other operational
+  state. Losing it does not expose GitLab secrets, but it can allow replayed
+  webhook deliveries or lifecycle handlers to perform duplicate writeback.
+- The state file must not be committed. It intentionally stores no GitLab API
+  token, webhook secret, raw issue body, raw comment body, prompt, or agent
+  output.
+
+Writeback retry:
+
+- GitLab issue comments and label updates retry transport errors, HTTP 429, and
+  HTTP 5xx responses.
+- `tracker.writeback_max_attempts` controls the maximum attempts. Default: `3`.
+- `tracker.writeback_base_backoff_ms` controls bounded exponential backoff.
+  Default: `250`.
+- Permission and validation failures such as HTTP 400, 401, 403, and 404 are
+  surfaced without repeated retry.
 
 Sample workflow:
 
@@ -234,7 +276,11 @@ Sample workflow:
 
 Known limitations:
 
-- Webhook idempotency is process-local and resets when the service restarts.
+- Persistent idempotency is local to one Symphony deployment. Multi-replica
+  production deployments require a shared durable state store before enabling
+  more than one active webhook receiver.
+- If `tracker.state_path` is placed on ephemeral storage or deleted, replay
+  protection and lifecycle comment suppression reset.
 - GitLab project issue IID is used as the tracker issue ID for this phase.
 - `/soc status`, `/soc retry`, and `/soc cancel` are parsed but return
   not-implemented responses.
@@ -249,6 +295,23 @@ Token boundary:
 - Local Codex app-server processes are launched with `GITLAB_API_TOKEN` and
   `GITLAB_WEBHOOK_SECRET` removed from their environment. If you add custom
   credentials or wrapper scripts, apply the same boundary explicitly.
+
+Failure recovery:
+
+- If a webhook is replayed after a successful delivery, Symphony returns a
+  duplicate status from persistent state and performs no GitLab writeback.
+- If a writeback exhausts retries, inspect the state file's `writebacks` entry
+  for the operation, fix the GitLab permission or availability issue, and use a
+  new operator comment to request a fresh run when appropriate.
+- Do not manually edit the state file while Symphony is running. Stop the
+  service first if emergency state repair is required.
+
+Official GitLab references:
+
+- Project access tokens: https://docs.gitlab.com/user/project/settings/project_access_tokens/
+- Project access token API and rotation: https://docs.gitlab.com/api/project_access_tokens/
+- Project webhooks: https://docs.gitlab.com/user/project/integrations/webhooks/
+- Project webhooks API: https://docs.gitlab.com/api/project_webhooks/
 
 The Spec Kit quickstart for this phase is available at
 [`../specs/001-gitlab-control-plane/quickstart.md`](../specs/001-gitlab-control-plane/quickstart.md).

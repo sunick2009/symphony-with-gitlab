@@ -22,6 +22,10 @@ export GITLAB_API_TOKEN=...
 export GITLAB_WEBHOOK_SECRET=...
 ```
 
+Use a token that can mutate project issues through the GitLab API. `read_api`
+is read-only and is not sufficient for issue notes or label updates. Do not
+grant repository write scopes for this control-plane phase.
+
 ## 3. Configure `WORKFLOW.md`
 
 ```yaml
@@ -31,9 +35,15 @@ tracker:
   api_key: $GITLAB_API_TOKEN
   project_slug: group/project
   webhook_secret: $GITLAB_WEBHOOK_SECRET
+  state_path: /var/lib/symphony/gitlab-control-plane-state.json
+  writeback_max_attempts: 3
+  writeback_base_backoff_ms: 250
   active_states: ["soc::queued"]
   terminal_states: ["soc::done", "soc::failed"]
 ```
+
+For disposable local testing, `state_path` may be omitted. For longer-running
+staging or production, set it to durable storage outside workspace cleanup.
 
 ## 4. Start Symphony with HTTP Enabled
 
@@ -58,9 +68,32 @@ In GitLab project webhooks:
 4. Confirm labels transition to `soc::queued`, then `soc::running`, then `soc::human-review` on normal completion.
 5. Simulate failure and confirm `soc::failed` plus failure comment.
 
+## 7. Restart-Safety Check
+
+1. After a successful `/soc run`, restart Symphony.
+2. Replay the same GitLab webhook delivery from GitLab's webhook delivery UI or
+   API.
+3. Confirm Symphony returns duplicate status and does not add another queued
+   label transition, acknowledgement comment, completion comment, or failure
+   comment.
+4. Confirm the state file exists at `tracker.state_path` and contains
+   `webhook_events` and `writebacks` records without secrets.
+
+## 8. Failure Recovery
+
+- Temporary GitLab API failures are retried with bounded backoff.
+- Exhausted writeback failures are recorded under `writebacks` in the persistent
+  state file.
+- Fix GitLab permissions, token validity, webhook reachability, or API
+  availability before issuing a new `/soc run`.
+- Stop Symphony before any emergency manual state-file repair.
+
 ## Known Limitations
 
-- Webhook idempotency is in-memory and resets on service restart.
+- Persistent idempotency is local to one Symphony deployment. Multi-replica
+  production requires a shared durable state backend.
+- If the persistent state file is deleted or stored on ephemeral disk, replay
+  protection and duplicate lifecycle comment suppression reset.
 - Branch and merge request creation are not part of this phase.
 - Cortex, IOC enrichment, responder actions, SOC UI, endpoint isolation, and automatic blocking are future phases.
 - GitLab issue IID is used as the tracker issue ID for this phase.

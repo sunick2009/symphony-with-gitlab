@@ -16,7 +16,7 @@ The current implementation already includes initial GitLab tracker routing, a RE
 
 **Primary Dependencies**: Phoenix/Bandit for the optional HTTP server, Req for outbound HTTP, Ecto changesets for config validation, ExUnit for tests
 
-**Storage**: In-memory orchestrator state and in-memory webhook idempotency for this phase; no database
+**Storage**: In-memory orchestrator state plus file-backed GitLab control-plane state for webhook idempotency, lifecycle writeback completion, and audit records; no database dependency in Stage 3
 
 **Testing**: ExUnit targeted tests plus relevant full-suite validation under `elixir/`
 
@@ -28,7 +28,7 @@ The current implementation already includes initial GitLab tracker routing, a RE
 
 **Constraints**: GitLab mutation stays in adapter layer; Codex agent does not receive GitLab write tokens; reference-only repository code must not be copied; no Cortex, responder actions, IOC enrichment, SOC UI, endpoint isolation, automatic blocking, branch creation, or merge request creation
 
-**Scale/Scope**: Single configured GitLab project for this phase, project issue IIDs as tracker IDs, process-local idempotency only
+**Scale/Scope**: Single configured GitLab project for this phase, project issue IIDs as tracker IDs, persistent local idempotency for one Symphony deployment
 
 ## Constitution Check
 
@@ -96,7 +96,55 @@ elixir/
 
 ## Complexity Tracking
 
-No constitution violations are currently required. The in-memory idempotency limitation is accepted for this phase and documented as a known limitation rather than a production hardening claim.
+No constitution violations are currently required. Stage 3 adds a local file-backed state store instead of a database because the current service has no database dependency and the requested hardening is scoped to longer-running staging plus future production preparation. This is intentionally a single-node design; shared multi-replica state remains an operational risk until a database or external durable store is introduced.
+
+## Stage 3 Operational Hardening Plan
+
+Baseline:
+
+- Stage 2 live staging validation completed against a disposable GitLab project.
+- Success path reached `soc::human-review`.
+- Failure path reached `soc::failed`.
+- Duplicate `/soc run` did not produce a duplicate completion.
+- GitLab token and webhook secret were not visible to the local Codex process.
+
+Required hardening:
+
+1. Replace process-only webhook idempotency with persistent delivery records.
+2. Persist lifecycle writeback completion records for acknowledgement, transition, completion, and failure operations.
+3. Persist audit records for handled, duplicate, ignored, and failed webhook deliveries.
+4. Add bounded retry/backoff for GitLab API writeback operations.
+5. Add restart-safe tests for webhook replay and lifecycle comment suppression.
+6. Add writeback retry tests for retryable failures and exhausted failures.
+7. Update documentation for production-readiness operations.
+
+Persistent State Design:
+
+- Default path: a deterministic file under `workspace.root` when `tracker.state_path` is not configured.
+- Configurable path: `tracker.state_path`, recommended for production so state survives workspace cleanup and host restarts.
+- Format: JSON document with `schema_version`, `webhook_events`, `writebacks`, and `issue_runs`.
+- Contents: event keys, operation keys, issue IIDs, lifecycle names, statuses, attempt counts, timestamps, and sanitized reasons.
+- Exclusions: no GitLab API tokens, webhook secrets, issue bodies, comments, agent output, or SOC data.
+- Atomicity: write through a temporary file and rename into place.
+- Concurrency: state mutations are serialized by a GenServer in this single-node implementation.
+
+Writeback Retry Design:
+
+- Applies to GitLab issue notes and label updates.
+- Retries transport errors, HTTP 429, and HTTP 5xx responses.
+- Does not retry expected permission or validation failures such as HTTP 400, 401, 403, or 404.
+- Uses bounded exponential backoff controlled by `tracker.writeback_max_attempts` and `tracker.writeback_base_backoff_ms`.
+- Records exhausted writeback failures in persistent state for audit and operator recovery.
+
+Out of scope for Stage 3:
+
+- Cortex integration.
+- IOC enrichment.
+- Responder actions.
+- SOC UI.
+- Branch creation.
+- Merge request creation.
+- Multi-node shared state.
 
 ## Phase 0: Research Output
 

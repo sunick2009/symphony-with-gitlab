@@ -47,6 +47,7 @@ Optional:
   GITLAB_PROJECT_ID
   GITLAB_WEBHOOK_SECRET
   GITLAB_WEBHOOK_PUBLIC_URL
+  GITLAB_STATE_PATH
   STAGE2_ENV_FILE
   STAGE2_RUN_ID
   STAGE2_RUNTIME_DIR
@@ -164,6 +165,7 @@ print_safe_env() {
     GITLAB_API_TOKEN \
     GITLAB_WEBHOOK_SECRET \
     GITLAB_WEBHOOK_PUBLIC_URL \
+    GITLAB_STATE_PATH \
     STAGE2_RUN_ID \
     STAGE2_CONFIRM_DISPOSABLE_PROJECT
   do
@@ -337,9 +339,10 @@ write_workflow() {
   require_tools
   init_dirs
 
-  local endpoint_json project_slug_json
+  local endpoint_json project_slug_json state_path_json
   endpoint_json="$(jq -Rn --arg value "$GITLAB_ENDPOINT" '$value')"
   project_slug_json="$(jq -Rn --arg value "$GITLAB_PROJECT_SLUG" '$value')"
+  state_path_json="$(jq -Rn --arg value "${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}" '$value')"
 
   if [ "$mode" = "success" ]; then
     cat >"$FAKE_CODEX" <<'SH'
@@ -350,15 +353,21 @@ trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}
   printf 'GITLAB_WEBHOOK_SECRET=%s\n' "${GITLAB_WEBHOOK_SECRET-unset}"
 } >> "$trace_file"
 
-count=0
 while IFS= read -r line; do
-  count=$((count + 1))
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) printf '%s\n' '{"id":2,"result":{"thread":{"id":"stage2-thread-success"}}}' ;;
-    3) printf '%s\n' '{"id":3,"result":{"turn":{"id":"stage2-turn-success"}}}' ;;
-    4) printf '%s\n' '{"method":"turn/completed"}'; exit 0 ;;
-    *) exit 0 ;;
+  case "$line" in
+    *'"id":1'*|*'"id": 1'*)
+      printf '%s\n' '{"id":1,"result":{}}'
+      ;;
+    *'"id":2'*|*'"id": 2'*)
+      printf '%s\n' '{"id":2,"result":{"thread":{"id":"stage2-thread-success"}}}'
+      ;;
+    *'"id":3'*|*'"id": 3'*)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"stage2-turn-success"}}}'
+      printf '%s\n' '{"method":"turn/completed"}'
+      exit 0
+      ;;
+    *)
+      ;;
   esac
 done
 SH
@@ -387,6 +396,9 @@ tracker:
   api_key: \$GITLAB_API_TOKEN
   project_slug: ${project_slug_json}
   webhook_secret: \$GITLAB_WEBHOOK_SECRET
+  state_path: ${state_path_json}
+  writeback_max_attempts: 3
+  writeback_base_backoff_ms: 250
   active_states: ["soc::queued"]
   terminal_states: ["soc::done", "soc::failed"]
 
@@ -701,7 +713,7 @@ render_report() {
   token_result="$(token_boundary_result)"
 
   {
-    printf '# Stage 2 GitLab Staging Validation Report\n\n'
+    printf '# GitLab Control Plane Staging Validation Report\n\n'
     printf 'Generated: %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'Evidence directory: `%s`\n\n' "$EVIDENCE_DIR"
 
@@ -760,10 +772,10 @@ render_report() {
     write_report_row 'Out-of-scope SOC actions' 'not part of helper commands' 'Pass'
 
     printf '\n## Remaining Risks\n\n'
-    printf '%s\n' '- Live webhook delivery is unproven until GitLab can reach `GITLAB_WEBHOOK_PUBLIC_URL`.'
+    printf '%s\n' '- Live webhook delivery depends on a stable public endpoint that GitLab can reach.'
     printf '%s\n' '- Remote token boundary remains pending unless a remote worker is used.'
-    printf '%s\n' '- In-memory webhook idempotency still resets on service restart.'
-    printf '%s\n' '- Duplicate `/soc run` after terminal handoff must be reviewed from notes and Symphony logs.'
+    printf '%s\n' '- Persistent state must be backed up or preserved across deployment rollouts.'
+    printf '%s\n' '- Duplicate `/soc run` after terminal handoff is rejected with an adapter-owned explanatory comment.'
   } >"$report_file"
 
   printf 'REPORT_FILE=%s\n' "$report_file"
@@ -840,11 +852,11 @@ assert_complete() {
   fi
 
   if [ "$failures" -eq 0 ]; then
-    printf 'Stage 2 evidence is complete.\n'
+    printf 'GitLab control-plane staging evidence is complete.\n'
     return 0
   fi
 
-  printf 'Stage 2 evidence is incomplete: %s failure(s).\n' "$failures" >&2
+  printf 'GitLab control-plane staging evidence is incomplete: %s failure(s).\n' "$failures" >&2
   return 1
 }
 

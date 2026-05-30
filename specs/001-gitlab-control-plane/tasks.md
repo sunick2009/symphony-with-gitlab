@@ -154,3 +154,56 @@ After MVP, implement US2 and US3 lifecycle tests and missing comment writeback, 
 ### Future Features
 
 Do not implement Cortex integration, responder actions, IOC enrichment, endpoint isolation, automatic blocking, SOC UI, branch creation, or merge request creation in this task set.
+
+---
+
+## Stage 3: Operational Hardening Tasks
+
+**Baseline**: Stage 2 live staging validation completed. The Stage 3 objective is restart-safe, idempotent, documented GitLab control-plane operation without adding Cortex, responder actions, SOC UI, branch creation, or merge request creation.
+
+### Phase 8: Persistent State Foundation
+
+**Purpose**: Add durable single-node control-plane state before changing webhook or writeback behavior.
+
+- [ ] T034 Add `tracker.state_path`, `tracker.writeback_max_attempts`, and `tracker.writeback_base_backoff_ms` config fields in `elixir/lib/symphony_elixir/config/schema.ex`
+- [ ] T035 Add a file-backed GitLab state store in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
+- [ ] T036 Start the GitLab state store under the application supervisor in `elixir/lib/symphony_elixir.ex`
+- [ ] T037 Add test support for per-test GitLab state paths in `elixir/test/support/test_support.exs`
+
+### Phase 9: Restart-Safe Webhook Idempotency
+
+**Independent Test**: Process a webhook, restart or reset the state-store process, replay the same event, and observe no duplicate label or comment writeback.
+
+- [ ] T038 [P] Add persistent webhook replay tests in `elixir/test/symphony_elixir/gitlab_test.exs`
+- [ ] T039 Replace ETS-only webhook idempotency with persistent state-store records in `elixir/lib/symphony_elixir/gitlab/webhook.ex`
+- [ ] T040 Record webhook audit outcomes for handled, ignored, duplicate, and failed deliveries in `elixir/lib/symphony_elixir/gitlab/webhook.ex`
+
+### Phase 10: Idempotent Lifecycle Writeback
+
+**Independent Test**: Re-run completion and failure lifecycle handlers after state-store restart and verify no duplicate lifecycle comments or transitions.
+
+- [ ] T041 [P] Add restart-safe lifecycle comment tests in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
+- [ ] T042 Add idempotent adapter writeback helpers in `elixir/lib/symphony_elixir/gitlab/adapter.ex`
+- [ ] T043 Route acknowledgement, completion, failure, and lifecycle transition writebacks through idempotent adapter helpers in `elixir/lib/symphony_elixir/gitlab/webhook.ex` and `elixir/lib/symphony_elixir/orchestrator.ex`
+
+### Phase 11: Bounded GitLab Writeback Retry
+
+**Independent Test**: Simulate retryable GitLab writeback failures followed by success and exhausted failure, verifying attempt counts and persistent audit records.
+
+- [ ] T044 [P] Add writeback retry success and exhaustion tests in `elixir/test/symphony_elixir/gitlab_test.exs`
+- [ ] T045 Implement bounded retry/backoff for GitLab issue comments and label updates in `elixir/lib/symphony_elixir/gitlab/client.ex`
+- [ ] T046 Persist exhausted writeback audit records in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
+
+### Phase 12: Production-Readiness Documentation
+
+- [ ] T047 Update GitLab operational documentation in `elixir/README.md`
+- [ ] T048 Update `specs/001-gitlab-control-plane/quickstart.md` with persistent state and recovery notes
+- [ ] T049 Update `specs/001-gitlab-control-plane/live-staging-validation.md` known risks to reflect Stage 3 behavior
+
+### Phase 13: Stage 3 Validation
+
+- [ ] T050 Run GitLab targeted tests in `elixir/`
+- [ ] T051 Run full Elixir test suite in `elixir/`
+- [ ] T052 Run `mix specs.check`, `mix format --check-formatted`, and `git diff --check`
+- [ ] T053 Run clean-room search checks against implementation, tests, README, and specs
+- [ ] T054 Re-run live staging validation against the disposable GitLab project, or document any environment blocker with exact commands and evidence
