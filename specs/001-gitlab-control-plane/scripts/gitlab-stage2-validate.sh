@@ -125,7 +125,7 @@ require_tools() {
 }
 
 init_dirs() {
-  mkdir -p "$RUNTIME_DIR" "$EVIDENCE_DIR"
+  mkdir -p "$RUNTIME_DIR" "$EVIDENCE_DIR" "${RUNTIME_DIR}/workspaces"
 }
 
 api_url() {
@@ -334,7 +334,12 @@ write_workflow() {
   fi
 
   require_webhook_env
+  require_tools
   init_dirs
+
+  local endpoint_json project_slug_json
+  endpoint_json="$(jq -Rn --arg value "$GITLAB_ENDPOINT" '$value')"
+  project_slug_json="$(jq -Rn --arg value "$GITLAB_PROJECT_SLUG" '$value')"
 
   if [ "$mode" = "success" ]; then
     cat >"$FAKE_CODEX" <<'SH'
@@ -372,15 +377,15 @@ SH
   chmod 755 "$FAKE_CODEX"
 
   cat >"$WORKFLOW_FILE" <<EOF
-agent:
-  codex:
-    command: ${FAKE_CODEX} app-server
+---
+codex:
+  command: ${FAKE_CODEX} app-server
 
 tracker:
   kind: gitlab
-  endpoint: \$GITLAB_ENDPOINT
+  endpoint: ${endpoint_json}
   api_key: \$GITLAB_API_TOKEN
-  project_slug: \$GITLAB_PROJECT_SLUG
+  project_slug: ${project_slug_json}
   webhook_secret: \$GITLAB_WEBHOOK_SECRET
   active_states: ["soc::queued"]
   terminal_states: ["soc::done", "soc::failed"]
@@ -390,6 +395,10 @@ workspace:
 
 polling:
   interval_ms: 1000
+
+observability:
+  dashboard_enabled: false
+---
 EOF
 
   printf 'WORKFLOW_FILE=%s\n' "$WORKFLOW_FILE"

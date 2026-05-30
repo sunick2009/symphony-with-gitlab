@@ -150,7 +150,7 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp request(method, project_path, opts) do
     request_fun = Application.get_env(:symphony_elixir, :gitlab_request_fun, &default_request/3)
-    request_fun.(method, api_url(project_path), opts)
+    request_fun.(method, api_url(project_path), normalize_request_opts(opts))
   end
 
   defp default_request(method, url, opts) do
@@ -165,6 +165,28 @@ defmodule SymphonyElixir.GitLab.Client do
       )
     end
   end
+
+  defp normalize_request_opts(opts) do
+    opts
+    |> Keyword.update(:params, nil, &normalize_query_params/1)
+    |> Keyword.reject(fn
+      {:params, nil} -> true
+      _ -> false
+    end)
+  end
+
+  defp normalize_query_params(%{} = params) do
+    if Enum.any?(params, fn {_key, value} -> is_list(value) end) do
+      Enum.flat_map(params, fn
+        {key, values} when is_list(values) -> Enum.map(values, &{key, &1})
+        {key, value} -> [{key, value}]
+      end)
+    else
+      params
+    end
+  end
+
+  defp normalize_query_params(params), do: params
 
   defp with_temporary_request_fun(request_fun, fun) do
     previous = Application.get_env(:symphony_elixir, :gitlab_request_fun)

@@ -209,6 +209,43 @@ defmodule SymphonyElixir.GitLabTest do
     end
   end
 
+  test "gitlab issue refresh expands list query parameters for repeated iid filters" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com",
+      tracker_api_token: "token",
+      tracker_project_slug: "group/project"
+    )
+
+    request_fun = fn :get, _url, opts ->
+      send(self(), {:gitlab_refresh_params, opts[:params]})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"x-next-page" => []},
+         body: []
+       }}
+    end
+
+    previous = Application.get_env(:symphony_elixir, :gitlab_request_fun)
+    Application.put_env(:symphony_elixir, :gitlab_request_fun, request_fun)
+
+    try do
+      assert {:ok, []} = Client.fetch_issue_states_by_ids(["1", "2"])
+
+      assert_receive {:gitlab_refresh_params, params}
+      assert {"iids[]", "1"} in params
+      assert {"iids[]", "2"} in params
+      assert {"scope", "all"} in params
+    after
+      case previous do
+        nil -> Application.delete_env(:symphony_elixir, :gitlab_request_fun)
+        value -> Application.put_env(:symphony_elixir, :gitlab_request_fun, value)
+      end
+    end
+  end
+
   test "gitlab token stays out of codex runtime settings and rendered prompt" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "gitlab",
