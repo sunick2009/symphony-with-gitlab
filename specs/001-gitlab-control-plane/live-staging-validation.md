@@ -111,7 +111,7 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh list-webhooks
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-webhook
 ```
 
-The helper writes sanitized webhook evidence to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/webhook.json`. Secret tokens are not written to evidence files.
+The helper writes sanitized webhook evidence to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/webhook.json`. Secret tokens are not written to evidence files. If a webhook with the same URL already exists, the helper updates it through the Project Webhooks API so `note_events`, SSL verification, and the secret token match this validation run.
 
 ## Scripted Validation Sequence
 

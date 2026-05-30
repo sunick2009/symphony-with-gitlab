@@ -227,31 +227,9 @@ matching_webhook() {
     "$source_file"
 }
 
-ensure_webhook() {
-  require_env
-  require_tools
-  init_dirs
-
-  list_webhooks >/dev/null
-
-  local existing_hook
-  existing_hook="$(matching_webhook "${EVIDENCE_DIR}/webhooks.json")"
-
-  if [ -n "$existing_hook" ]; then
-    printf '%s' "$existing_hook" >"${EVIDENCE_DIR}/webhook.json"
-    cat "${EVIDENCE_DIR}/webhook.json"
-    return 0
-  fi
-
-  curl_json POST "/hooks" \
-    --data-urlencode "url=${GITLAB_WEBHOOK_PUBLIC_URL}" \
-    --data-urlencode "token=${GITLAB_WEBHOOK_SECRET}" \
-    --data-urlencode "note_events=true" \
-    --data-urlencode "issues_events=true" \
-    --data-urlencode "enable_ssl_verification=true" \
-    --data-urlencode "push_events=false" \
-    --data-urlencode "merge_requests_events=false" \
-    >"${EVIDENCE_DIR}/webhook-created-raw.json"
+sanitize_webhook_file() {
+  local source_file="$1"
+  local target_file="$2"
 
   jq '{
     id,
@@ -263,7 +241,47 @@ ensure_webhook() {
     merge_requests_events,
     token_present,
     signing_token_present
-  }' "${EVIDENCE_DIR}/webhook-created-raw.json" >"${EVIDENCE_DIR}/webhook.json"
+  }' "$source_file" >"$target_file"
+}
+
+write_webhook_settings() {
+  local method="$1"
+  local path="$2"
+  local raw_file="$3"
+
+  curl_json "$method" "$path" \
+    --data-urlencode "url=${GITLAB_WEBHOOK_PUBLIC_URL}" \
+    --data-urlencode "token=${GITLAB_WEBHOOK_SECRET}" \
+    --data-urlencode "note_events=true" \
+    --data-urlencode "issues_events=true" \
+    --data-urlencode "enable_ssl_verification=true" \
+    --data-urlencode "push_events=false" \
+    --data-urlencode "merge_requests_events=false" \
+    >"$raw_file"
+}
+
+ensure_webhook() {
+  require_env
+  require_tools
+  init_dirs
+
+  list_webhooks >/dev/null
+
+  local existing_hook
+  existing_hook="$(matching_webhook "${EVIDENCE_DIR}/webhooks.json")"
+
+  if [ -n "$existing_hook" ]; then
+    local existing_hook_id
+    existing_hook_id="$(printf '%s' "$existing_hook" | jq -r '.id')"
+
+    write_webhook_settings PUT "/hooks/${existing_hook_id}" "${EVIDENCE_DIR}/webhook-updated-raw.json"
+    sanitize_webhook_file "${EVIDENCE_DIR}/webhook-updated-raw.json" "${EVIDENCE_DIR}/webhook.json"
+    cat "${EVIDENCE_DIR}/webhook.json"
+    return 0
+  fi
+
+  write_webhook_settings POST "/hooks" "${EVIDENCE_DIR}/webhook-created-raw.json"
+  sanitize_webhook_file "${EVIDENCE_DIR}/webhook-created-raw.json" "${EVIDENCE_DIR}/webhook.json"
 
   cat "${EVIDENCE_DIR}/webhook.json"
 }
