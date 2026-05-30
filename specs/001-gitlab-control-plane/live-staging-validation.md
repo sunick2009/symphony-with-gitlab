@@ -70,6 +70,7 @@ export GITLAB_PROJECT_SLUG=<group-or-namespace/staging-project>
 export GITLAB_API_TOKEN=<project bot token, secret, do not print>
 export GITLAB_WEBHOOK_SECRET=<webhook secret, secret, do not print>
 export GITLAB_WEBHOOK_PUBLIC_URL=https://<public-url>/api/v1/gitlab/webhook
+export STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 export STAGE2_RUN_ID=symphony-stage2-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
@@ -101,9 +102,63 @@ Webhook settings:
 - Events: comments / note events are required. Issue events are optional and must not be used as a dispatch trigger.
 - SSL verification: enabled for any HTTPS public URL.
 
+## Scripted Validation Sequence
+
+The helper script stores evidence under `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}` and refuses to run GitLab writes unless `STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes`.
+
+Use this sequence after configuring the staging project webhook and exporting the required environment variables:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success
+
+cd elixir
+mix setup
+mix build
+./bin/symphony /tmp/symphony-stage2/WORKFLOW.stage2.md --port 8080
+```
+
+In another shell with the same exported environment:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-success-issue
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
+```
+
+Then restart Symphony after switching the fake Codex command to failure mode:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure
+```
+
+After Symphony is running again:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-failure-issue
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run failure
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll failure
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes failure
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh evidence-summary
+```
+
 ## Preflight Commands
 
 These commands intentionally avoid printing secret values.
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight
+```
+
+Equivalent manual checks:
 
 ```bash
 test -n "${GITLAB_ENDPOINT:-}" && echo "GITLAB_ENDPOINT=<set>"
@@ -112,6 +167,7 @@ test -n "${GITLAB_PROJECT_SLUG:-}" && echo "GITLAB_PROJECT_SLUG=<set>"
 test -n "${GITLAB_API_TOKEN:-}" && echo "GITLAB_API_TOKEN=<set>"
 test -n "${GITLAB_WEBHOOK_SECRET:-}" && echo "GITLAB_WEBHOOK_SECRET=<set>"
 test -n "${GITLAB_WEBHOOK_PUBLIC_URL:-}" && echo "GITLAB_WEBHOOK_PUBLIC_URL=<set>"
+test "${STAGE2_CONFIRM_DISPOSABLE_PROJECT:-}" = "yes" && echo "STAGE2_CONFIRM_DISPOSABLE_PROJECT=<set>"
 ```
 
 ```bash
@@ -126,6 +182,14 @@ Expected result: the returned project is the disposable staging project and not 
 ## Label Setup Commands
 
 Create missing labels. Existing labels may return a conflict response; record that as acceptable if the label already exists.
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels
+```
+
+Equivalent manual command:
 
 ```bash
 for label in \
@@ -179,6 +243,14 @@ For live Stage 2, the fake Codex command is acceptable only for validating GitLa
 
 Create a fake Codex command that records only whether GitLab variables are visible to the agent process:
 
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success
+```
+
+Equivalent manual setup:
+
 ```bash
 mkdir -p /tmp/symphony-stage2
 cat > /tmp/symphony-stage2/fake-codex-success <<'SH'
@@ -227,6 +299,14 @@ The webhook receiver must be publicly reachable at `GITLAB_WEBHOOK_PUBLIC_URL`. 
 
 Create a staging issue with synthetic content:
 
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-success-issue
+```
+
+Equivalent manual command:
+
 ```bash
 SUCCESS_TITLE="${STAGE2_RUN_ID} success path"
 SUCCESS_ISSUE_JSON=$(
@@ -244,6 +324,14 @@ printf 'SUCCESS_IID=%s\nSUCCESS_URL=%s\n' "$SUCCESS_IID" "$SUCCESS_URL"
 
 Trigger the workflow through GitLab so the real webhook is delivered:
 
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success
+```
+
+Equivalent manual command:
+
 ```bash
 curl --fail --silent --show-error \
   --request POST \
@@ -254,6 +342,14 @@ curl --fail --silent --show-error \
 ```
 
 Poll until the issue reaches `soc::human-review`:
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success
+```
+
+Equivalent manual command:
 
 ```bash
 for _ in $(seq 1 60); do
@@ -270,6 +366,14 @@ done
 ```
 
 Verify comments:
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
+```
+
+Equivalent manual command:
 
 ```bash
 curl --fail --silent --show-error \
@@ -289,6 +393,15 @@ Expected evidence:
 ## Duplicate `/soc run` Validation
 
 Post the same command again to the success issue:
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
+```
+
+Equivalent manual command:
 
 ```bash
 curl --fail --silent --show-error \
@@ -311,6 +424,14 @@ Note: the current spec guarantees in-memory duplicate webhook delivery handling 
 
 Stop Symphony, replace the fake Codex command with a failing command, and restart Symphony with the same workflow path:
 
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure
+```
+
+Equivalent manual command:
+
 ```bash
 cat > /tmp/symphony-stage2/fake-codex-success <<'SH'
 #!/bin/sh
@@ -325,6 +446,15 @@ chmod 755 /tmp/symphony-stage2/fake-codex-success
 ```
 
 Create and trigger a failure issue:
+
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-failure-issue
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run failure
+```
+
+Equivalent manual command:
 
 ```bash
 FAIL_TITLE="${STAGE2_RUN_ID} failure path"
@@ -350,6 +480,15 @@ curl --fail --silent --show-error \
 
 Poll until `soc::failed`:
 
+Preferred scripted path:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll failure
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes failure
+```
+
+Equivalent manual command:
+
 ```bash
 for _ in $(seq 1 60); do
   issue=$(
@@ -371,6 +510,12 @@ Expected evidence:
 - Final labels include `soc::failed`.
 - Final labels do not include `soc::queued`, `soc::claimed`, or `soc::running`.
 - Agent trace shows GitLab secrets as `unset`.
+
+Verify local token boundary:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
+```
 
 ## Remote Token Boundary Validation
 
