@@ -146,7 +146,10 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll failure
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes failure
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh evidence-summary
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh render-report
 ```
+
+The rendered report is written to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/stage2-report.md` and includes sanitized environment status, exact commands, issue URLs, results, and remaining risks.
 
 ## Preflight Commands
 
@@ -563,6 +566,12 @@ env | rg '^(GITLAB|SYMPHONY|MIX_ENV|PHX|PORT)=' | sed -E 's/=.*/=<set>/'
 ```
 
 Result: no output.
+
+The helper can render a pending evidence report before live credentials are available:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh render-report
+```
 
 ## Remaining Risks
 

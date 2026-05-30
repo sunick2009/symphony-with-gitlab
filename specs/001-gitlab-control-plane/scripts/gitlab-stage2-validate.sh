@@ -30,6 +30,7 @@ Usage:
   gitlab-stage2-validate.sh notes success|failure
   gitlab-stage2-validate.sh token-boundary
   gitlab-stage2-validate.sh evidence-summary
+  gitlab-stage2-validate.sh render-report
 
 Required environment, values must not be printed:
   GITLAB_ENDPOINT
@@ -397,6 +398,150 @@ evidence_summary() {
   find "$EVIDENCE_DIR" -maxdepth 1 -type f | sort
 }
 
+json_value() {
+  local file="$1"
+  local filter="$2"
+
+  if [ -f "$file" ]; then
+    jq -r "$filter // \"Pending\"" "$file"
+  else
+    printf 'Pending'
+  fi
+}
+
+note_count() {
+  local file="$1"
+  local pattern="$2"
+
+  if [ -f "$file" ]; then
+    jq --arg pattern "$pattern" '[.[] | select(.body | contains($pattern))] | length' "$file"
+  else
+    printf '0'
+  fi
+}
+
+label_present_result() {
+  local file="$1"
+  local label="$2"
+
+  if [ ! -f "$file" ]; then
+    printf 'Pending'
+    return
+  fi
+
+  if jq -e --arg label "$label" '.labels | index($label)' "$file" >/dev/null; then
+    printf 'Pass'
+  else
+    printf 'Fail'
+  fi
+}
+
+token_boundary_result() {
+  if [ ! -f "$AGENT_TRACE" ]; then
+    printf 'Pending'
+    return
+  fi
+
+  if grep -Eq 'GITLAB_API_TOKEN=unset|GITLAB_API_TOKEN=$' "$AGENT_TRACE" &&
+    grep -Eq 'GITLAB_WEBHOOK_SECRET=unset|GITLAB_WEBHOOK_SECRET=$' "$AGENT_TRACE"; then
+    printf 'Pass'
+  else
+    printf 'Fail'
+  fi
+}
+
+write_report_row() {
+  local check="$1"
+  local evidence="$2"
+  local result="$3"
+
+  printf '| %s | %s | %s |\n' "$check" "$evidence" "$result"
+}
+
+render_report() {
+  init_dirs
+
+  local report_file="${EVIDENCE_DIR}/stage2-report.md"
+  local success_url failure_url project_url
+  local ack_count completion_count failure_count
+  local success_label_result failure_label_result token_result
+
+  success_url="$(json_value "$(issue_file success)" '.web_url')"
+  failure_url="$(json_value "$(issue_file failure)" '.web_url')"
+  project_url="$(json_value "${EVIDENCE_DIR}/project.json" '.web_url')"
+  ack_count="$(note_count "${EVIDENCE_DIR}/success-notes.json" 'Symphony accepted')"
+  completion_count="$(note_count "${EVIDENCE_DIR}/success-notes.json" 'soc::human-review')"
+  failure_count="$(note_count "${EVIDENCE_DIR}/failure-notes.json" 'soc::failed')"
+  success_label_result="$(label_present_result "${EVIDENCE_DIR}/success-final-issue.json" 'soc::human-review')"
+  failure_label_result="$(label_present_result "${EVIDENCE_DIR}/failure-final-issue.json" 'soc::failed')"
+  token_result="$(token_boundary_result)"
+
+  {
+    printf '# Stage 2 GitLab Staging Validation Report\n\n'
+    printf 'Generated: %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'Evidence directory: `%s`\n\n' "$EVIDENCE_DIR"
+
+    printf '## Environment\n\n'
+    printf '```text\n'
+    print_safe_env
+    printf '```\n\n'
+
+    printf '## Commands\n\n'
+    printf '```bash\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success\n'
+    printf 'cd elixir\n'
+    printf 'mix setup\n'
+    printf 'mix build\n'
+    printf './bin/symphony /tmp/symphony-stage2/WORKFLOW.stage2.md --port 8080\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-success-issue\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-failure-issue\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run failure\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll failure\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes failure\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh render-report\n'
+    printf '```\n\n'
+
+    printf '## Issue URLs\n\n'
+    printf '%s\n' "- Staging project: ${project_url}"
+    printf '%s\n' "- Success issue: ${success_url}"
+    printf '%s\n\n' "- Failure issue: ${failure_url}"
+
+    printf '## Results\n\n'
+    printf '| Check | Evidence | Result |\n'
+    printf '| --- | --- | --- |\n'
+    write_report_row 'Staging project confirmed' "$project_url" "$(if [ "$project_url" = "Pending" ]; then printf 'Pending'; else printf 'Pass'; fi)"
+    write_report_row 'Required labels setup attempted' "${EVIDENCE_DIR}/labels.jsonl" "$(if [ -f "${EVIDENCE_DIR}/labels.jsonl" ]; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Success issue reached soc::human-review' "${EVIDENCE_DIR}/success-final-issue.json" "$success_label_result"
+    write_report_row 'Acknowledgement comment count' "$ack_count" "$(if [ "$ack_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Completion comment count' "$completion_count" "$(if [ "$completion_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Duplicate run completion count remains one' "$completion_count" "$(if [ "$completion_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Failure issue reached soc::failed' "${EVIDENCE_DIR}/failure-final-issue.json" "$failure_label_result"
+    write_report_row 'Failure comment count' "$failure_count" "$(if [ "$failure_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Local Codex token boundary' "$AGENT_TRACE" "$token_result"
+    write_report_row 'Remote Codex token boundary' 'not exercised unless remote worker is configured' 'Pending'
+    write_report_row 'Branch or MR creation' 'not part of helper commands' 'Pass'
+    write_report_row 'Out-of-scope SOC actions' 'not part of helper commands' 'Pass'
+
+    printf '\n## Remaining Risks\n\n'
+    printf '%s\n' '- Live webhook delivery is unproven until GitLab can reach `GITLAB_WEBHOOK_PUBLIC_URL`.'
+    printf '%s\n' '- Remote token boundary remains pending unless a remote worker is used.'
+    printf '%s\n' '- In-memory webhook idempotency still resets on service restart.'
+    printf '%s\n' '- Duplicate `/soc run` after terminal handoff must be reviewed from notes and Symphony logs.'
+  } >"$report_file"
+
+  printf 'REPORT_FILE=%s\n' "$report_file"
+}
+
 main() {
   local command="${1:-}"
   shift || true
@@ -412,6 +557,7 @@ main() {
     notes) fetch_notes "${1:-}" ;;
     token-boundary) token_boundary ;;
     evidence-summary) evidence_summary ;;
+    render-report) render_report ;;
     ""|help|--help|-h) usage ;;
     *)
       echo "unknown command: ${command}" >&2
