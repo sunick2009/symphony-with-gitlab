@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.GitLabTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.GitLab.{Adapter, Client, Command, Webhook}
+  alias SymphonyElixir.GitLab.{Adapter, Client, Command, StateStore, Webhook}
 
   defmodule FakeGitLabClient do
     @spec fetch_candidate_issues() :: {:ok, [term()]}
@@ -143,6 +143,18 @@ defmodule SymphonyElixir.GitLabTest do
     assert "soc::done" in removed_labels
   end
 
+  test "gitlab adapter lifecycle transitions are idempotent across state store restart" do
+    configure_gitlab_webhook_test()
+
+    assert :ok = Adapter.update_issue_state_once("42", "soc::running")
+    assert_receive {:gitlab_labels, "42", ["soc::running"], _removed_labels}
+
+    restart_gitlab_state_store()
+
+    assert :ok = Adapter.update_issue_state_once("42", "soc::running")
+    refute_receive {:gitlab_labels, "42", _add, _remove}
+  end
+
   test "gitlab client surfaces writeback status errors" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "gitlab",
@@ -162,6 +174,81 @@ defmodule SymphonyElixir.GitLabTest do
                [],
                request_fun
              )
+  end
+
+  test "gitlab client retries retryable writeback failures before success" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com",
+      tracker_api_token: "token",
+      tracker_project_slug: "group/project",
+      tracker_writeback_max_attempts: 3,
+      tracker_writeback_base_backoff_ms: 0
+    )
+
+    test_pid = self()
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    request_fun = fn :put, _url, _opts ->
+      attempt = Agent.get_and_update(attempts, &{&1 + 1, &1 + 1})
+      send(test_pid, {:gitlab_writeback_attempt, attempt})
+
+      if attempt < 3 do
+        {:ok, %{status: 500, body: %{"message" => "temporary"}}}
+      else
+        {:ok, %{status: 200, body: %{}}}
+      end
+    end
+
+    assert :ok =
+             Client.update_issue_labels_for_test(
+               "42",
+               ["soc::queued"],
+               [],
+               request_fun
+             )
+
+    assert_receive {:gitlab_writeback_attempt, 1}
+    assert_receive {:gitlab_writeback_attempt, 2}
+    assert_receive {:gitlab_writeback_attempt, 3}
+  end
+
+  test "gitlab adapter records exhausted writeback retries in persistent state" do
+    state_path = unique_gitlab_state_path()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com",
+      tracker_api_token: "token",
+      tracker_project_slug: "group/project",
+      tracker_state_path: state_path,
+      tracker_writeback_max_attempts: 2,
+      tracker_writeback_base_backoff_ms: 0
+    )
+
+    request_fun = fn :put, _url, _opts ->
+      {:ok, %{status: 500, body: %{"message" => "temporary"}}}
+    end
+
+    previous = Application.get_env(:symphony_elixir, :gitlab_request_fun)
+    Application.put_env(:symphony_elixir, :gitlab_request_fun, request_fun)
+    StateStore.reset_for_test()
+
+    try do
+      assert {:error, {:gitlab_api_status, 500}} = Adapter.update_issue_state_once("42", "soc::running")
+
+      state = StateStore.read_for_test()
+      writeback = state["writebacks"]["issue:42:transition:soc::running"]
+      assert writeback["status"] == "failed"
+      assert writeback["attempts"] == 2
+      assert writeback["operation"] == "transition"
+      assert writeback["issue_iid"] == "42"
+    after
+      case previous do
+        nil -> Application.delete_env(:symphony_elixir, :gitlab_request_fun)
+        value -> Application.put_env(:symphony_elixir, :gitlab_request_fun, value)
+      end
+    end
   end
 
   test "gitlab polling fetches configured active labels and deduplicates issues" do
@@ -311,6 +398,29 @@ defmodule SymphonyElixir.GitLabTest do
     refute_receive {:gitlab_comment, "42", _body}
   end
 
+  test "webhook replay remains suppressed after state store restart" do
+    configure_gitlab_webhook_test()
+
+    headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-persistent-replay"
+    }
+
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/soc run"))
+    assert_receive {:gitlab_labels, "42", ["soc::queued"], _removed_labels}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/soc run` and queued this issue for an agent run."}
+
+    restart_gitlab_state_store()
+
+    assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/soc run"))
+    refute_receive {:gitlab_labels, "42", _add, _remove}
+    refute_receive {:gitlab_comment, "42", _body}
+
+    state = StateStore.read_for_test()
+    assert state["webhook_events"]["note:1001"]["status"] == "handled"
+  end
+
   test "webhook rejects duplicate run commands for active or terminal lifecycle issues" do
     configure_gitlab_webhook_test()
 
@@ -322,7 +432,7 @@ defmodule SymphonyElixir.GitLabTest do
       }
 
       assert {:error, :issue_already_in_lifecycle} =
-               Webhook.handle(headers, note_payload("/soc run", labels: [label]))
+               Webhook.handle(headers, note_payload("/soc run", labels: [label], note_id: 2000 + index))
 
       assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
       refute_receive {:gitlab_labels, "42", _add, _remove}
@@ -364,6 +474,7 @@ defmodule SymphonyElixir.GitLabTest do
       tracker_api_token: "token",
       tracker_project_slug: "group/project",
       tracker_webhook_secret: "secret",
+      tracker_state_path: unique_gitlab_state_path(),
       tracker_active_states: ["soc::queued"],
       tracker_terminal_states: ["soc::done"]
     )
@@ -371,6 +482,20 @@ defmodule SymphonyElixir.GitLabTest do
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
     Application.put_env(:symphony_elixir, :gitlab_test_recipient, self())
     Webhook.reset_idempotency_for_test()
+  end
+
+  defp restart_gitlab_state_store do
+    case Process.whereis(StateStore) do
+      pid when is_pid(pid) ->
+        GenServer.stop(pid)
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp unique_gitlab_state_path do
+    Path.join(System.tmp_dir!(), "symphony-gitlab-state-#{System.unique_integer([:positive])}.json")
   end
 
   defp note_payload(note, opts \\ []) do

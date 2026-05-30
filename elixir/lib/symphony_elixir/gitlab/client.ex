@@ -52,7 +52,7 @@ defmodule SymphonyElixir.GitLab.Client do
 
   @spec post_issue_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def post_issue_comment(issue_iid, body) when is_binary(issue_iid) and is_binary(body) do
-    request(:post, "/issues/#{encode_path_segment(issue_iid)}/notes", json: %{"body" => body})
+    writeback_request(:post, "/issues/#{encode_path_segment(issue_iid)}/notes", json: %{"body" => body})
     |> case do
       {:ok, %{status: status}} when status in 200..299 -> :ok
       {:ok, %{status: status, body: response_body}} -> api_status_error(status, response_body)
@@ -71,7 +71,7 @@ defmodule SymphonyElixir.GitLab.Client do
     if payload == %{} do
       :ok
     else
-      request(:put, "/issues/#{encode_path_segment(issue_iid)}", json: payload)
+      writeback_request(:put, "/issues/#{encode_path_segment(issue_iid)}", json: payload)
       |> case do
         {:ok, %{status: status}} when status in 200..299 -> :ok
         {:ok, %{status: status, body: response_body}} -> api_status_error(status, response_body)
@@ -151,6 +151,38 @@ defmodule SymphonyElixir.GitLab.Client do
   defp request(method, project_path, opts) do
     request_fun = Application.get_env(:symphony_elixir, :gitlab_request_fun, &default_request/3)
     request_fun.(method, api_url(project_path), normalize_request_opts(opts))
+  end
+
+  defp writeback_request(method, project_path, opts) do
+    max_attempts = Config.settings!().tracker.writeback_max_attempts
+    base_backoff_ms = Config.settings!().tracker.writeback_base_backoff_ms
+    do_writeback_request(method, project_path, opts, 1, max_attempts, base_backoff_ms)
+  end
+
+  defp do_writeback_request(method, project_path, opts, attempt, max_attempts, base_backoff_ms) do
+    result = request(method, project_path, opts)
+
+    if retryable_writeback_result?(result) and attempt < max_attempts do
+      sleep_for_retry(attempt, base_backoff_ms)
+      do_writeback_request(method, project_path, opts, attempt + 1, max_attempts, base_backoff_ms)
+    else
+      Process.put(:symphony_gitlab_writeback_attempts, attempt)
+      result
+    end
+  end
+
+  defp retryable_writeback_result?({:error, _reason}), do: true
+
+  defp retryable_writeback_result?({:ok, %{status: status}})
+       when status == 429 or status in 500..599,
+       do: true
+
+  defp retryable_writeback_result?(_result), do: false
+
+  defp sleep_for_retry(_attempt, 0), do: :ok
+
+  defp sleep_for_retry(attempt, base_backoff_ms) do
+    Process.sleep(base_backoff_ms * Integer.pow(2, attempt - 1))
   end
 
   defp default_request(method, url, opts) do

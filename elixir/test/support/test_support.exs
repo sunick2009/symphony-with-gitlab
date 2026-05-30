@@ -103,6 +103,9 @@ defmodule SymphonyElixir.TestSupport do
           tracker_project_slug: "project",
           tracker_assignee: nil,
           tracker_webhook_secret: nil,
+          tracker_state_path: nil,
+          tracker_writeback_max_attempts: 3,
+          tracker_writeback_base_backoff_ms: 0,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -141,6 +144,9 @@ defmodule SymphonyElixir.TestSupport do
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_webhook_secret = Keyword.get(config, :tracker_webhook_secret)
+    tracker_state_path = Keyword.get(config, :tracker_state_path)
+    tracker_writeback_max_attempts = Keyword.get(config, :tracker_writeback_max_attempts)
+    tracker_writeback_base_backoff_ms = Keyword.get(config, :tracker_writeback_base_backoff_ms)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -180,6 +186,9 @@ defmodule SymphonyElixir.TestSupport do
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  webhook_secret: #{yaml_value(tracker_webhook_secret)}",
+        "  state_path: #{yaml_value(tracker_state_path)}",
+        "  writeback_max_attempts: #{yaml_value(tracker_writeback_max_attempts)}",
+        "  writeback_base_backoff_ms: #{yaml_value(tracker_writeback_base_backoff_ms)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",

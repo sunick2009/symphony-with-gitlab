@@ -1182,7 +1182,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_update_gitlab_run_lifecycle(issue_id, lifecycle_state)
        when is_binary(issue_id) and is_binary(lifecycle_state) do
     if Config.settings!().tracker.kind == "gitlab" do
-      case Tracker.update_issue_state(issue_id, lifecycle_state) do
+      case SymphonyElixir.GitLab.Adapter.update_issue_state_once(issue_id, lifecycle_state) do
         :ok ->
           :ok
 
@@ -1196,7 +1196,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_create_gitlab_run_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     if Config.settings!().tracker.kind == "gitlab" do
-      case Tracker.create_comment(issue_id, body) do
+      case SymphonyElixir.GitLab.Adapter.create_comment_once(issue_id, gitlab_lifecycle_comment_key(body), body) do
         :ok ->
           :ok
 
@@ -1207,6 +1207,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_create_gitlab_run_comment(_issue_id, _body), do: :ok
+
+  defp gitlab_lifecycle_comment_key(body) when is_binary(body) do
+    cond do
+      String.contains?(body, "soc::human-review") -> "lifecycle:soc::human-review:comment"
+      String.contains?(body, "soc::failed") -> "lifecycle:soc::failed:comment"
+      true -> "lifecycle:comment:#{:erlang.phash2(body)}"
+    end
+  end
 
   defp agent_runner_module do
     Application.get_env(:symphony_elixir, :agent_runner_module, AgentRunner)

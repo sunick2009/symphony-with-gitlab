@@ -51,6 +51,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:webhook_secret, :string)
+      field(:state_path, :string)
+      field(:writeback_max_attempts, :integer, default: 3)
+      field(:writeback_base_backoff_ms, :integer, default: 250)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -60,9 +63,23 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :webhook_secret, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :webhook_secret,
+          :state_path,
+          :writeback_max_attempts,
+          :writeback_base_backoff_ms,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
+      |> validate_number(:writeback_max_attempts, greater_than: 0)
+      |> validate_number(:writeback_base_backoff_ms, greater_than_or_equal_to: 0)
     end
   end
 
@@ -374,7 +391,8 @@ defmodule SymphonyElixir.Config.Schema do
       | endpoint: default_tracker_endpoint(tracker_kind, settings.tracker.endpoint),
         api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(tracker_kind)),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
-        webhook_secret: resolve_secret_setting(settings.tracker.webhook_secret, System.get_env("GITLAB_WEBHOOK_SECRET"))
+        webhook_secret: resolve_secret_setting(settings.tracker.webhook_secret, System.get_env("GITLAB_WEBHOOK_SECRET")),
+        state_path: resolve_path_value(settings.tracker.state_path, nil)
     }
 
     workspace = %{
@@ -445,6 +463,8 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
+
+  defp resolve_path_value(_value, default), do: default
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do

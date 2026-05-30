@@ -5,9 +5,8 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.Command}
+  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.Command, GitLab.StateStore}
 
-  @idempotency_table :symphony_gitlab_webhook_events
   @not_implemented_commands ~w(status retry cancel)
   @run_blocking_labels [
     "soc::queued",
@@ -23,85 +22,105 @@ defmodule SymphonyElixir.GitLab.Webhook do
   def handle(headers, payload) when is_map(headers) and is_map(payload) do
     with :ok <- validate_secret(headers),
          {:ok, event_key} <- event_key(headers, payload),
-         :ok <- record_event(event_key) do
-      dispatch_event(header(headers, "x-gitlab-event"), payload)
+         :ok <- begin_event(event_key, headers, payload) do
+      result = dispatch_event(header(headers, "x-gitlab-event"), payload, event_key)
+      :ok = finish_event(event_key, result)
+      result
+    else
+      {:ok, :duplicate} ->
+        {:ok, :duplicate}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @spec reset_idempotency_for_test() :: :ok
   def reset_idempotency_for_test do
-    ensure_table()
-    :ets.delete_all_objects(@idempotency_table)
-    :ok
+    StateStore.reset_for_test()
   end
 
-  defp dispatch_event("Note Hook", payload), do: handle_note_hook(payload)
-  defp dispatch_event("Issue Hook", _payload), do: {:ok, :ignored}
-  defp dispatch_event(_event, _payload), do: {:ok, :ignored}
+  defp dispatch_event("Note Hook", payload, event_key), do: handle_note_hook(payload, event_key)
+  defp dispatch_event("Issue Hook", _payload, _event_key), do: {:ok, :ignored}
+  defp dispatch_event(_event, _payload, _event_key), do: {:ok, :ignored}
 
-  defp handle_note_hook(payload) do
+  defp handle_note_hook(payload, event_key) do
     if issue_note?(payload) do
       payload
       |> note_body()
       |> Command.parse()
-      |> handle_commands(payload)
+      |> handle_commands(payload, event_key)
     else
       {:ok, :ignored}
     end
   end
 
-  defp handle_commands(:ignore, _payload), do: {:ok, :ignored}
+  defp handle_commands(:ignore, _payload, _event_key), do: {:ok, :ignored}
 
-  defp handle_commands({:error, {:unknown_command, command}}, payload) do
+  defp handle_commands({:error, {:unknown_command, command}}, payload, event_key) do
     with {:ok, issue_iid} <- issue_iid(payload) do
-      Adapter.create_comment(issue_iid, "Unsupported Symphony command: `/soc #{command}`.")
+      Adapter.create_comment_once(issue_iid, "webhook:#{event_key}:unsupported", "Unsupported Symphony command: `/soc #{command}`.")
     end
     |> normalize_writeback_result(:handled)
   end
 
-  defp handle_commands({:ok, commands}, payload) do
+  defp handle_commands({:ok, commands}, payload, event_key) do
     commands
     |> List.first()
-    |> handle_command(payload)
+    |> handle_command(payload, event_key)
   end
 
-  defp handle_command(%Command{name: "run"}, payload), do: handle_run_command(payload)
+  defp handle_command(%Command{name: "run"}, payload, event_key), do: handle_run_command(payload, event_key)
 
-  defp handle_command(%Command{name: command}, payload) when command in @not_implemented_commands do
+  defp handle_command(%Command{name: command}, payload, event_key) when command in @not_implemented_commands do
     with {:ok, issue_iid} <- issue_iid(payload) do
-      Adapter.create_comment(issue_iid, "The `/soc #{command}` command is recognized but is not implemented yet.")
+      Adapter.create_comment_once(
+        issue_iid,
+        "webhook:#{event_key}:not-implemented",
+        "The `/soc #{command}` command is recognized but is not implemented yet."
+      )
     end
     |> normalize_writeback_result(:handled)
   end
 
-  defp handle_command(_command, _payload), do: {:ok, :ignored}
+  defp handle_command(_command, _payload, _event_key), do: {:ok, :ignored}
 
-  defp handle_run_command(payload) do
+  defp handle_run_command(payload, event_key) do
     with {:ok, issue_iid} <- issue_iid(payload),
-         :ok <- ensure_issue_open(payload, issue_iid),
-         :ok <- ensure_issue_not_already_in_lifecycle(payload, issue_iid),
+         :ok <- ensure_issue_open(payload, issue_iid, event_key),
+         :ok <- ensure_issue_not_already_in_lifecycle(payload, issue_iid, event_key),
          :ok <- Adapter.transition_issue_labels(issue_iid, "soc::queued"),
-         :ok <- Adapter.create_comment(issue_iid, "Symphony accepted `/soc run` and queued this issue for an agent run.") do
+         :ok <-
+           Adapter.create_comment_once(
+             issue_iid,
+             "webhook:#{event_key}:accepted",
+             "Symphony accepted `/soc run` and queued this issue for an agent run."
+           ) do
       {:ok, :handled}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp ensure_issue_open(payload, issue_iid) do
+  defp ensure_issue_open(payload, issue_iid, event_key) do
     if issue_state(payload) == "closed" do
-      Adapter.create_comment(issue_iid, "Symphony cannot run on a closed GitLab issue.")
+      Adapter.create_comment_once(issue_iid, "webhook:#{event_key}:closed", "Symphony cannot run on a closed GitLab issue.")
       {:error, :closed_issue}
     else
       :ok
     end
   end
 
-  defp ensure_issue_not_already_in_lifecycle(payload, issue_iid) do
+  defp ensure_issue_not_already_in_lifecycle(payload, issue_iid, event_key) do
     labels = issue_labels(payload)
 
     if Enum.any?(labels, &(normalize_label(&1) in @run_blocking_labels)) do
-      Adapter.create_comment(issue_iid, "Symphony cannot queue this issue because it is already in a Symphony lifecycle state.")
+      Adapter.create_comment_once(
+        issue_iid,
+        "webhook:#{event_key}:already-in-lifecycle",
+        "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."
+      )
+
       {:error, :issue_already_in_lifecycle}
     else
       :ok
@@ -133,44 +152,40 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   defp secure_compare(_left, _right), do: false
 
-  defp record_event(event_key) do
-    ensure_table()
-
-    if :ets.insert_new(@idempotency_table, {event_key, System.system_time(:second)}) do
-      :ok
-    else
-      {:ok, :duplicate}
-    end
+  defp begin_event(event_key, headers, payload) do
+    StateStore.begin_webhook_event(event_key, %{
+      event_type: header(headers, "x-gitlab-event"),
+      issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+      source: "gitlab"
+    })
   end
 
-  defp ensure_table do
-    case :ets.whereis(@idempotency_table) do
-      :undefined ->
-        try do
-          :ets.new(@idempotency_table, [:named_table, :public, :set])
-        rescue
-          ArgumentError -> @idempotency_table
-        end
+  defp finish_event(event_key, {:ok, status}) when is_atom(status) do
+    StateStore.finish_webhook_event(event_key, status, status)
+  end
 
-      _tid ->
-        @idempotency_table
-    end
+  defp finish_event(event_key, {:error, reason}) do
+    StateStore.finish_webhook_event(event_key, :failed, reason)
   end
 
   defp event_key(headers, payload) do
     cond do
+      note_id = issue_note_id(payload) ->
+        {:ok, "note:" <> to_string(note_id)}
+
       event_uuid = header(headers, "x-gitlab-event-uuid") ->
         {:ok, "event:" <> event_uuid}
 
-      note_id = get_in(payload, ["object_attributes", "id"]) ->
-        {:ok, "note:" <> to_string(note_id)}
-
       issue_id = get_in(payload, ["object_attributes", "id"]) ->
-        {:ok, "issue:" <> to_string(issue_id)}
+        {:ok, "object:" <> to_string(issue_id)}
 
       true ->
         {:error, :missing_gitlab_event_id}
     end
+  end
+
+  defp issue_note_id(payload) do
+    if issue_note?(payload), do: get_in(payload, ["object_attributes", "id"])
   end
 
   defp issue_note?(payload) do
@@ -201,6 +216,9 @@ defmodule SymphonyElixir.GitLab.Webhook do
   end
 
   defp normalize_iid(_iid), do: nil
+
+  defp issue_iid_for_audit({:ok, issue_iid}), do: issue_iid
+  defp issue_iid_for_audit({:error, _reason}), do: nil
 
   defp issue_state(payload) do
     payload
