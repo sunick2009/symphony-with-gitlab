@@ -26,6 +26,7 @@ Usage:
   gitlab-stage2-validate.sh write-workflow success|failure
   gitlab-stage2-validate.sh create-success-issue
   gitlab-stage2-validate.sh post-run success|failure|duplicate
+  gitlab-stage2-validate.sh verify-duplicate
   gitlab-stage2-validate.sh poll success|failure
   gitlab-stage2-validate.sh notes success|failure
   gitlab-stage2-validate.sh token-boundary
@@ -375,6 +376,60 @@ fetch_notes() {
   jq '[.[] | {id, body, created_at}]' "${EVIDENCE_DIR}/${kind}-notes.json"
 }
 
+verify_duplicate() {
+  require_env
+  require_tools
+  init_dirs
+
+  local iid completion_count issue_json notes_json
+  iid="$(issue_iid success)"
+
+  for _ in $(seq 1 15); do
+    notes_json="$(curl_json GET "/issues/${iid}/notes")"
+    printf '%s' "$notes_json" >"${EVIDENCE_DIR}/success-notes.json"
+    completion_count="$(note_count "${EVIDENCE_DIR}/success-notes.json" 'soc::human-review')"
+
+    if [ "$completion_count" -gt 1 ] 2>/dev/null; then
+      jq -n \
+        --arg result "Fail" \
+        --arg reason "more than one completion comment observed" \
+        --argjson completion_count "$completion_count" \
+        '{result: $result, reason: $reason, completion_count: $completion_count}' \
+        >"${EVIDENCE_DIR}/duplicate-verification.json"
+      cat "${EVIDENCE_DIR}/duplicate-verification.json"
+      exit 1
+    fi
+
+    sleep 2
+  done
+
+  issue_json="$(curl_json GET "/issues/${iid}")"
+  printf '%s' "$issue_json" >"${EVIDENCE_DIR}/duplicate-final-issue.json"
+
+  local final_label_result
+  final_label_result="$(label_present_result "${EVIDENCE_DIR}/duplicate-final-issue.json" 'soc::human-review')"
+
+  if [ "$completion_count" -eq 1 ] 2>/dev/null && [ "$final_label_result" = "Pass" ]; then
+    jq -n \
+      --arg result "Pass" \
+      --arg reason "completion comment count remained one after duplicate command observation window" \
+      --argjson completion_count "$completion_count" \
+      '{result: $result, reason: $reason, completion_count: $completion_count}' \
+      >"${EVIDENCE_DIR}/duplicate-verification.json"
+    cat "${EVIDENCE_DIR}/duplicate-verification.json"
+    return 0
+  fi
+
+  jq -n \
+    --arg result "Fail" \
+    --arg reason "duplicate verification did not preserve expected human-review state and single completion comment" \
+    --argjson completion_count "${completion_count:-0}" \
+    '{result: $result, reason: $reason, completion_count: $completion_count}' \
+    >"${EVIDENCE_DIR}/duplicate-verification.json"
+  cat "${EVIDENCE_DIR}/duplicate-verification.json"
+  exit 1
+}
+
 token_boundary() {
   if [ ! -f "$AGENT_TRACE" ]; then
     echo "agent trace not found: ${AGENT_TRACE}" >&2
@@ -436,6 +491,16 @@ label_present_result() {
   fi
 }
 
+json_result() {
+  local file="$1"
+
+  if [ -f "$file" ]; then
+    jq -r '.result // "Pending"' "$file"
+  else
+    printf 'Pending'
+  fi
+}
+
 token_boundary_result() {
   if [ ! -f "$AGENT_TRACE" ]; then
     printf 'Pending'
@@ -464,7 +529,7 @@ render_report() {
   local report_file="${EVIDENCE_DIR}/stage2-report.md"
   local success_url failure_url project_url
   local ack_count completion_count failure_count
-  local success_label_result failure_label_result token_result
+  local success_label_result failure_label_result duplicate_result token_result
 
   success_url="$(json_value "$(issue_file success)" '.web_url')"
   failure_url="$(json_value "$(issue_file failure)" '.web_url')"
@@ -474,6 +539,7 @@ render_report() {
   failure_count="$(note_count "${EVIDENCE_DIR}/failure-notes.json" 'soc::failed')"
   success_label_result="$(label_present_result "${EVIDENCE_DIR}/success-final-issue.json" 'soc::human-review')"
   failure_label_result="$(label_present_result "${EVIDENCE_DIR}/failure-final-issue.json" 'soc::failed')"
+  duplicate_result="$(json_result "${EVIDENCE_DIR}/duplicate-verification.json")"
   token_result="$(token_boundary_result)"
 
   {
@@ -500,6 +566,7 @@ render_report() {
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-duplicate\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure\n'
@@ -524,7 +591,7 @@ render_report() {
     write_report_row 'Success issue reached soc::human-review' "${EVIDENCE_DIR}/success-final-issue.json" "$success_label_result"
     write_report_row 'Acknowledgement comment count' "$ack_count" "$(if [ "$ack_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
     write_report_row 'Completion comment count' "$completion_count" "$(if [ "$completion_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
-    write_report_row 'Duplicate run completion count remains one' "$completion_count" "$(if [ "$completion_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Duplicate run verification' "${EVIDENCE_DIR}/duplicate-verification.json" "$duplicate_result"
     write_report_row 'Failure issue reached soc::failed' "${EVIDENCE_DIR}/failure-final-issue.json" "$failure_label_result"
     write_report_row 'Failure comment count' "$failure_count" "$(if [ "$failure_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
     write_report_row 'Local Codex token boundary' "$AGENT_TRACE" "$token_result"
@@ -553,6 +620,7 @@ main() {
     create-success-issue) create_issue success ;;
     create-failure-issue) create_issue failure ;;
     post-run) post_run "${1:-}" ;;
+    verify-duplicate) verify_duplicate ;;
     poll) poll_issue "${1:-}" ;;
     notes) fetch_notes "${1:-}" ;;
     token-boundary) token_boundary ;;

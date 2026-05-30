@@ -127,6 +127,7 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run succes
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-duplicate
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 ```
@@ -401,6 +402,7 @@ Preferred scripted path:
 
 ```bash
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run duplicate
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-duplicate
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success
 ```
 
@@ -420,6 +422,7 @@ Expected evidence:
 - No second orchestrator run is started.
 - No duplicate completion comment appears.
 - The issue remains in `soc::human-review`.
+- `duplicate-verification.json` reports `Pass` after the observation window.
 
 Note: the current spec guarantees in-memory duplicate webhook delivery handling and rejects duplicate run commands for `soc::claimed` or `soc::running`. It does not yet reject `/soc run` on `soc::human-review`. If this live check creates a second run after terminal handoff, record it as a Stage 2 gap rather than changing scope silently.
 
