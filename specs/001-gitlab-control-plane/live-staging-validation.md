@@ -160,9 +160,11 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes failure
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh evidence-summary
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh render-report
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh assert-complete
 ```
 
 The rendered report is written to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/stage2-report.md` and includes sanitized environment status, exact commands, issue URLs, results, and remaining risks.
+The completion assertion reads the evidence directory and fails unless the staging project, labels, webhook, success path, duplicate check, failure path, and local token-boundary evidence all pass.
 
 ## Preflight Commands
 
@@ -586,6 +588,12 @@ The helper can render a pending evidence report before live credentials are avai
 
 ```bash
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh render-report
+```
+
+The helper can also prove that evidence is not yet sufficient:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh assert-complete
 ```
 
 ## Remaining Risks

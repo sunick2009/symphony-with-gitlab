@@ -34,6 +34,7 @@ Usage:
   gitlab-stage2-validate.sh token-boundary
   gitlab-stage2-validate.sh evidence-summary
   gitlab-stage2-validate.sh render-report
+  gitlab-stage2-validate.sh assert-complete
 
 Required environment, values must not be printed:
   GITLAB_ENDPOINT
@@ -701,6 +702,85 @@ render_report() {
   printf 'REPORT_FILE=%s\n' "$report_file"
 }
 
+assert_equals() {
+  local expected="$1"
+  local actual="$2"
+  local label="$3"
+
+  if [ "$actual" = "$expected" ]; then
+    printf 'PASS: %s\n' "$label"
+    return 0
+  fi
+
+  printf 'FAIL: %s expected=%s actual=%s\n' "$label" "$expected" "$actual" >&2
+  return 1
+}
+
+assert_file() {
+  local file="$1"
+  local label="$2"
+
+  if [ -s "$file" ]; then
+    printf 'PASS: %s\n' "$label"
+    return 0
+  fi
+
+  printf 'FAIL: %s missing file %s\n' "$label" "$file" >&2
+  return 1
+}
+
+assert_json_filter() {
+  local file="$1"
+  local filter="$2"
+  local label="$3"
+
+  if [ -s "$file" ] && jq -e "$filter" "$file" >/dev/null; then
+    printf 'PASS: %s\n' "$label"
+    return 0
+  fi
+
+  printf 'FAIL: %s did not match %s in %s\n' "$label" "$filter" "$file" >&2
+  return 1
+}
+
+assert_complete() {
+  init_dirs
+
+  local failures=0
+  local ack_count completion_count failure_count
+
+  ack_count="$(note_count "${EVIDENCE_DIR}/success-notes.json" 'Symphony accepted')"
+  completion_count="$(note_count "${EVIDENCE_DIR}/success-notes.json" 'soc::human-review')"
+  failure_count="$(note_count "${EVIDENCE_DIR}/failure-notes.json" 'soc::failed')"
+
+  assert_file "${EVIDENCE_DIR}/project.json" 'staging project evidence exists' || failures=$((failures + 1))
+  assert_file "${EVIDENCE_DIR}/labels.jsonl" 'label setup evidence exists' || failures=$((failures + 1))
+  assert_json_filter "${EVIDENCE_DIR}/webhook.json" '.url != null and .note_events == true and .enable_ssl_verification == true' 'webhook configured for note events' || failures=$((failures + 1))
+  assert_json_filter "$(issue_file success)" '(.web_url != null) and (.description | contains("Synthetic Stage 2"))' 'success issue is synthetic staging data' || failures=$((failures + 1))
+  assert_json_filter "${EVIDENCE_DIR}/success-final-issue.json" '.labels | index("soc::human-review")' 'success issue reached human review' || failures=$((failures + 1))
+  assert_equals '1' "$ack_count" 'one acknowledgement comment on success issue' || failures=$((failures + 1))
+  assert_equals '1' "$completion_count" 'one completion comment on success issue' || failures=$((failures + 1))
+  assert_json_filter "${EVIDENCE_DIR}/duplicate-verification.json" '.result == "Pass"' 'duplicate run verification passed' || failures=$((failures + 1))
+  assert_json_filter "$(issue_file failure)" '(.web_url != null) and (.description | contains("Synthetic Stage 2"))' 'failure issue is synthetic staging data' || failures=$((failures + 1))
+  assert_json_filter "${EVIDENCE_DIR}/failure-final-issue.json" '.labels | index("soc::failed")' 'failure issue reached failed state' || failures=$((failures + 1))
+  assert_equals '1' "$failure_count" 'one failure comment on failure issue' || failures=$((failures + 1))
+
+  if [ "$(token_boundary_result)" = "Pass" ]; then
+    printf 'PASS: local Codex token boundary\n'
+  else
+    printf 'FAIL: local Codex token boundary\n' >&2
+    failures=$((failures + 1))
+  fi
+
+  if [ "$failures" -eq 0 ]; then
+    printf 'Stage 2 evidence is complete.\n'
+    return 0
+  fi
+
+  printf 'Stage 2 evidence is incomplete: %s failure(s).\n' "$failures" >&2
+  return 1
+}
+
 main() {
   local command="${1:-}"
   shift || true
@@ -720,6 +800,7 @@ main() {
     token-boundary) token_boundary ;;
     evidence-summary) evidence_summary ;;
     render-report) render_report ;;
+    assert-complete) assert_complete ;;
     ""|help|--help|-h) usage ;;
     *)
       echo "unknown command: ${command}" >&2
