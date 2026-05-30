@@ -298,7 +298,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd(local_hook_shell(), ["-lc", command], cd: workspace, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -341,6 +341,10 @@ defmodule SymphonyElixir.Workspace do
     Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{status} output=#{inspect(sanitized_output)}")
 
     {:error, {:workspace_hook_failed, hook_name, status, output}}
+  end
+
+  defp local_hook_shell do
+    System.find_executable("bash") || System.find_executable("sh") || "sh"
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do

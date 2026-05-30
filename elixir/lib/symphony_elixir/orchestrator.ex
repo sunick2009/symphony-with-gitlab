@@ -232,6 +232,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
     Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+    maybe_update_gitlab_run_lifecycle(issue_id, "soc::failed")
+    maybe_create_gitlab_run_comment(issue_id, "Symphony agent run failed and moved this issue to `soc::failed`.")
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -725,6 +727,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    maybe_update_gitlab_run_lifecycle(issue_id, "soc::waiting-input")
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -925,12 +929,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           agent_runner_module().run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        maybe_update_gitlab_run_lifecycle(issue.id, "soc::running")
 
         running =
           Map.put(state.running, issue.id, %{
@@ -965,6 +970,8 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+        maybe_update_gitlab_run_lifecycle(issue.id, "soc::failed")
+        maybe_create_gitlab_run_comment(issue.id, "Symphony could not start an agent run and moved this issue to `soc::failed`.")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
@@ -996,6 +1003,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
+    maybe_update_gitlab_run_lifecycle(issue_id, "soc::human-review")
+    maybe_create_gitlab_run_comment(issue_id, "Symphony agent run completed and moved this issue to `soc::human-review`.")
+
     %{
       state
       | completed: MapSet.put(state.completed, issue_id),
@@ -1167,6 +1177,39 @@ defmodule SymphonyElixir.Orchestrator do
         blocked: Map.delete(state.blocked, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp maybe_update_gitlab_run_lifecycle(issue_id, lifecycle_state)
+       when is_binary(issue_id) and is_binary(lifecycle_state) do
+    if Config.settings!().tracker.kind == "gitlab" do
+      case Tracker.update_issue_state(issue_id, lifecycle_state) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to update GitLab run lifecycle label issue_id=#{issue_id} lifecycle_state=#{lifecycle_state}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp maybe_update_gitlab_run_lifecycle(_issue_id, _lifecycle_state), do: :ok
+
+  defp maybe_create_gitlab_run_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
+    if Config.settings!().tracker.kind == "gitlab" do
+      case Tracker.create_comment(issue_id, body) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to create GitLab run lifecycle comment issue_id=#{issue_id}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp maybe_create_gitlab_run_comment(_issue_id, _body), do: :ok
+
+  defp agent_runner_module do
+    Application.get_env(:symphony_elixir, :agent_runner_module, AgentRunner)
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do

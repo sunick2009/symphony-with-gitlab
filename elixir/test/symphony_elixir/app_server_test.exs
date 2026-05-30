@@ -183,6 +183,97 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server removes gitlab write credentials from codex process environment" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-gitlab-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1002")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-env.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      previous_gitlab_token = System.get_env("GITLAB_API_TOKEN")
+      previous_gitlab_secret = System.get_env("GITLAB_WEBHOOK_SECRET")
+
+      on_exit(fn ->
+        restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        restore_env("GITLAB_API_TOKEN", previous_gitlab_token)
+        restore_env("GITLAB_WEBHOOK_SECRET", previous_gitlab_secret)
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("GITLAB_API_TOKEN", "glpat-secret-token")
+      System.put_env("GITLAB_WEBHOOK_SECRET", "webhook-secret")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-env.trace}"
+      {
+        printf 'GITLAB_API_TOKEN=%s\\n' "${GITLAB_API_TOKEN-unset}"
+        printf 'GITLAB_WEBHOOK_SECRET=%s\\n' "${GITLAB_WEBHOOK_SECRET-unset}"
+      } >> "$trace_file"
+
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_kind: "gitlab",
+        tracker_api_token: "$GITLAB_API_TOKEN",
+        tracker_project_slug: "group/project",
+        tracker_webhook_secret: "$GITLAB_WEBHOOK_SECRET",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-gitlab-env",
+        identifier: "MT-1002",
+        title: "Validate GitLab env isolation",
+        description: "Ensure Codex cannot read GitLab write credentials",
+        state: "soc::queued",
+        labels: ["soc::queued"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate GitLab env isolation", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "GITLAB_API_TOKEN=unset"
+      assert trace =~ "GITLAB_WEBHOOK_SECRET=unset"
+      refute trace =~ "glpat-secret-token"
+      refute trace =~ "webhook-secret"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

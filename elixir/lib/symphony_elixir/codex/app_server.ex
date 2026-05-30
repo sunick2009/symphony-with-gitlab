@@ -201,6 +201,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
             cd: String.to_charlist(workspace),
+            env: sanitized_agent_environment(),
             line: @port_line_bytes
           ]
         )
@@ -217,9 +218,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp remote_launch_command(workspace) when is_binary(workspace) do
     [
       "cd #{shell_escape(workspace)}",
+      "unset GITLAB_API_TOKEN GITLAB_WEBHOOK_SECRET",
       "exec #{Config.settings!().codex.command}"
     ]
     |> Enum.join(" && ")
+  end
+
+  defp sanitized_agent_environment do
+    [
+      {~c"GITLAB_API_TOKEN", false},
+      {~c"GITLAB_WEBHOOK_SECRET", false}
+    ]
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do

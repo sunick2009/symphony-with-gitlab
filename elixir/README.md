@@ -115,6 +115,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `tracker.kind` may be `linear`, `gitlab`, or `memory`. The GitLab support is a control-plane
+  foundation: issue polling, label-derived state, webhook command parsing, adapter-owned issue
+  comments, and adapter-owned label transitions.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -132,7 +135,11 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear or `GITLAB_API_TOKEN` for GitLab when
+  unset. Explicit `$ENV_VAR` references are also supported.
+- For GitLab, `tracker.endpoint` defaults to `https://gitlab.com`, `tracker.project_slug` is the
+  GitLab project path such as `group/project`, and issue state is derived from configured labels.
+  Configure `tracker.webhook_secret` or `GITLAB_WEBHOOK_SECRET` before enabling the webhook route.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -154,7 +161,97 @@ codex:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`. For GitLab, the same
+  server also accepts project webhooks at `POST /api/v1/gitlab/webhook`; configure GitLab issue and
+  note events with the same secret stored in `tracker.webhook_secret`.
+
+Minimal GitLab control-plane example:
+
+```yaml
+tracker:
+  kind: gitlab
+  endpoint: https://gitlab.com
+  api_key: $GITLAB_API_TOKEN
+  project_slug: group/project
+  webhook_secret: $GITLAB_WEBHOOK_SECRET
+  active_states: ["soc::queued"]
+  terminal_states: ["soc::done", "soc::failed"]
+```
+
+### GitLab control-plane setup
+
+GitLab support in this implementation is limited to control-plane operations:
+issue polling, issue note webhooks, `/soc` command parsing, issue comments, and
+label transitions. It does not create branches or merge requests, and it does
+not run Cortex, responder, IOC enrichment, endpoint isolation, or other
+production-impacting actions.
+
+Create these labels in the GitLab project before enabling the workflow:
+
+- `soc::queued`
+- `soc::claimed`
+- `soc::running`
+- `soc::waiting-input`
+- `soc::human-review`
+- `soc::rework`
+- `soc::failed`
+- `soc::done`
+
+Use a GitLab token that can read project issues, create issue comments, and
+update issue labels. For GitLab personal, project, or group access tokens, this
+typically requires the `api` scope. Store the token outside the repository:
+
+```bash
+export GITLAB_API_TOKEN=...
+export GITLAB_WEBHOOK_SECRET=...
+```
+
+Start Symphony with the HTTP server enabled, then configure a GitLab project
+webhook:
+
+```bash
+./bin/symphony ./WORKFLOW.md --port 8080
+```
+
+Webhook settings:
+
+- URL: `https://<your-host>/api/v1/gitlab/webhook`
+- Secret token: the same value as `GITLAB_WEBHOOK_SECRET`
+- Events: issue comment / note events. Issue events may be enabled, but they do
+  not dispatch runs in this phase.
+
+Sample workflow:
+
+1. Open a GitLab issue.
+2. Comment `/soc run` at the beginning of a line.
+3. Symphony validates the webhook secret, queues the issue with `soc::queued`,
+   and posts an acknowledgement comment.
+4. Polling discovers the queued issue and dispatches an isolated agent run.
+5. Dispatch moves the issue to `soc::running`.
+6. Normal completion moves the issue to `soc::human-review` and posts a
+   completion comment.
+7. Agent failure moves the issue to `soc::failed` and posts a failure comment.
+
+Known limitations:
+
+- Webhook idempotency is process-local and resets when the service restarts.
+- GitLab project issue IID is used as the tracker issue ID for this phase.
+- `/soc status`, `/soc retry`, and `/soc cancel` are parsed but return
+  not-implemented responses.
+- Branch creation, merge request creation, Cortex integration, IOC enrichment,
+  responder actions, SOC UI, endpoint isolation, and automatic blocking are
+  future phases.
+
+Token boundary:
+
+- GitLab comments and label mutations are performed only by the GitLab adapter.
+- Codex turns are not given GitLab write credentials by the GitLab adapter.
+- Local Codex app-server processes are launched with `GITLAB_API_TOKEN` and
+  `GITLAB_WEBHOOK_SECRET` removed from their environment. If you add custom
+  credentials or wrapper scripts, apply the same boundary explicitly.
+
+The Spec Kit quickstart for this phase is available at
+[`../specs/001-gitlab-control-plane/quickstart.md`](../specs/001-gitlab-control-plane/quickstart.md).
 
 ## Web dashboard
 

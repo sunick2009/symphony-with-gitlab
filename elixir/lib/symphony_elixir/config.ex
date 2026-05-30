@@ -119,19 +119,29 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "gitlab", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
       true ->
-        :ok
+        validate_tracker_credentials(settings.tracker)
     end
   end
+
+  defp validate_tracker_credentials(%{kind: "linear", api_key: api_key}) when not is_binary(api_key),
+    do: {:error, :missing_linear_api_token}
+
+  defp validate_tracker_credentials(%{kind: "linear", project_slug: project_slug})
+       when not is_binary(project_slug),
+       do: {:error, :missing_linear_project_slug}
+
+  defp validate_tracker_credentials(%{kind: "gitlab", api_key: api_key}) when not is_binary(api_key),
+    do: {:error, :missing_gitlab_api_token}
+
+  defp validate_tracker_credentials(%{kind: "gitlab", project_slug: project_slug})
+       when not is_binary(project_slug),
+       do: {:error, :missing_gitlab_project_slug}
+
+  defp validate_tracker_credentials(_tracker), do: :ok
 
   defp format_config_error(reason) do
     case reason do
