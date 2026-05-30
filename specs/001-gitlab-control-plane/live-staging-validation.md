@@ -76,6 +76,8 @@ export STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 export STAGE2_RUN_ID=symphony-stage2-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
+For local convenience, copy `elixir/.env.example` to `elixir/.env` and fill in values there. The helper script automatically loads `elixir/.env` when present. To use a different file, set `STAGE2_ENV_FILE=/path/to/file` before running the helper.
+
 Required token properties:
 
 - Token type: project access token or another project-scoped bot credential approved for the disposable staging project.
@@ -173,6 +175,14 @@ These commands intentionally avoid printing secret values.
 Preferred scripted path:
 
 ```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight
+```
+
+If you filled in `elixir/.env`, the helper loads it automatically:
+
+```bash
+cp elixir/.env.example elixir/.env
+$EDITOR elixir/.env
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight
 ```
 

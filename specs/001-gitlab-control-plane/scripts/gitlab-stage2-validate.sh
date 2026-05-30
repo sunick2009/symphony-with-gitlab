@@ -6,6 +6,7 @@ readonly EVIDENCE_DIR="${STAGE2_EVIDENCE_DIR:-${RUNTIME_DIR}/evidence}"
 readonly WORKFLOW_FILE="${STAGE2_WORKFLOW_FILE:-${RUNTIME_DIR}/WORKFLOW.stage2.md}"
 readonly AGENT_TRACE="${SYMPHONY_STAGE2_AGENT_TRACE:-${RUNTIME_DIR}/agent-env.trace}"
 readonly FAKE_CODEX="${RUNTIME_DIR}/fake-codex-stage2"
+readonly DEFAULT_ENV_FILE="elixir/.env"
 
 readonly LABELS=(
   "soc::queued"
@@ -46,12 +47,26 @@ Required environment, values must not be printed:
   STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes
 
 Optional:
+  STAGE2_ENV_FILE
   STAGE2_RUN_ID
   STAGE2_RUNTIME_DIR
   STAGE2_EVIDENCE_DIR
   STAGE2_WORKFLOW_FILE
   SYMPHONY_STAGE2_AGENT_TRACE
 EOF
+}
+
+load_env_file() {
+  local env_file="${STAGE2_ENV_FILE:-$DEFAULT_ENV_FILE}"
+
+  if [ ! -f "$env_file" ]; then
+    return 0
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
 }
 
 require_command() {
@@ -828,4 +843,5 @@ main() {
   esac
 }
 
+load_env_file
 main "$@"
