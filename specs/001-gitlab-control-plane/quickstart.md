@@ -64,3 +64,11 @@ In GitLab project webhooks:
 - Branch and merge request creation are not part of this phase.
 - Cortex, IOC enrichment, responder actions, SOC UI, endpoint isolation, and automatic blocking are future phases.
 - GitLab issue IID is used as the tracker issue ID for this phase.
+
+## Stage 2 Live Staging Validation
+
+For disposable-project live validation, use
+[live-staging-validation.md](live-staging-validation.md). It records the
+required project labels, token scope, webhook settings, environment variables,
+success path, duplicate `/soc run` check, failure path, token-boundary check,
+and evidence table.

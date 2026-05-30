@@ -252,6 +252,8 @@ Token boundary:
 
 The Spec Kit quickstart for this phase is available at
 [`../specs/001-gitlab-control-plane/quickstart.md`](../specs/001-gitlab-control-plane/quickstart.md).
+Live validation against a disposable GitLab staging project is tracked in
+[`../specs/001-gitlab-control-plane/live-staging-validation.md`](../specs/001-gitlab-control-plane/live-staging-validation.md).
 
 ## Web dashboard
 
