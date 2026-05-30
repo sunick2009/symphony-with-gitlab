@@ -44,6 +44,7 @@ GitLab issue/comment
 
 - Project access tokens: https://docs.gitlab.com/user/project/settings/project_access_tokens/
 - Project webhooks: https://docs.gitlab.com/user/project/integrations/webhooks/
+- Project webhooks API: https://docs.gitlab.com/api/project_webhooks/
 - Webhook comment events: https://docs.gitlab.com/user/project/integrations/webhook_events/
 - Issues API: https://docs.gitlab.com/api/issues/
 - Notes API: https://docs.gitlab.com/api/notes/
@@ -58,6 +59,7 @@ Relevant current GitLab behavior:
 - Issue label mutation is available through the Issues API with `add_labels` and `remove_labels`.
 - Issue note creation is available through the Notes API.
 - Project label creation is available through the Labels API.
+- Project webhook listing and creation are available through the Project Webhooks API. Creating the staging webhook requires Maintainer or Owner access, a webhook URL, `note_events`, and the secret `token` used by Symphony's `X-Gitlab-Token` validation.
 
 ## Required Staging Configuration
 
@@ -102,6 +104,15 @@ Webhook settings:
 - Events: comments / note events are required. Issue events are optional and must not be used as a dispatch trigger.
 - SSL verification: enabled for any HTTPS public URL.
 
+Preferred scripted setup:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh list-webhooks
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-webhook
+```
+
+The helper writes sanitized webhook evidence to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/webhook.json`. Secret tokens are not written to evidence files.
+
 ## Scripted Validation Sequence
 
 The helper script stores evidence under `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}` and refuses to run GitLab writes unless `STAGE2_CONFIRM_DISPOSABLE_PROJECT=yes`.
@@ -111,6 +122,7 @@ Use this sequence after configuring the staging project webhook and exporting th
 ```bash
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-webhook
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success
 
 cd elixir

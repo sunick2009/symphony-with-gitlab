@@ -23,6 +23,8 @@ usage() {
 Usage:
   gitlab-stage2-validate.sh preflight
   gitlab-stage2-validate.sh ensure-labels
+  gitlab-stage2-validate.sh list-webhooks
+  gitlab-stage2-validate.sh ensure-webhook
   gitlab-stage2-validate.sh write-workflow success|failure
   gitlab-stage2-validate.sh create-success-issue
   gitlab-stage2-validate.sh post-run success|failure|duplicate
@@ -190,6 +192,79 @@ ensure_labels() {
         ;;
     esac
   done
+}
+
+sanitize_webhooks() {
+  jq '[.[] | {
+    id,
+    url,
+    note_events,
+    issues_events,
+    enable_ssl_verification,
+    push_events,
+    merge_requests_events,
+    token_present,
+    signing_token_present
+  }]'
+}
+
+list_webhooks() {
+  require_env
+  require_tools
+  init_dirs
+
+  curl_json GET "/hooks" >"${EVIDENCE_DIR}/webhooks-raw.json"
+  sanitize_webhooks <"${EVIDENCE_DIR}/webhooks-raw.json" >"${EVIDENCE_DIR}/webhooks.json"
+  cat "${EVIDENCE_DIR}/webhooks.json"
+}
+
+matching_webhook() {
+  local source_file="$1"
+
+  jq --arg url "$GITLAB_WEBHOOK_PUBLIC_URL" \
+    '[.[] | select(.url == $url)] | first // empty' \
+    "$source_file"
+}
+
+ensure_webhook() {
+  require_env
+  require_tools
+  init_dirs
+
+  list_webhooks >/dev/null
+
+  local existing_hook
+  existing_hook="$(matching_webhook "${EVIDENCE_DIR}/webhooks.json")"
+
+  if [ -n "$existing_hook" ]; then
+    printf '%s' "$existing_hook" >"${EVIDENCE_DIR}/webhook.json"
+    cat "${EVIDENCE_DIR}/webhook.json"
+    return 0
+  fi
+
+  curl_json POST "/hooks" \
+    --data-urlencode "url=${GITLAB_WEBHOOK_PUBLIC_URL}" \
+    --data-urlencode "token=${GITLAB_WEBHOOK_SECRET}" \
+    --data-urlencode "note_events=true" \
+    --data-urlencode "issues_events=true" \
+    --data-urlencode "enable_ssl_verification=true" \
+    --data-urlencode "push_events=false" \
+    --data-urlencode "merge_requests_events=false" \
+    >"${EVIDENCE_DIR}/webhook-created-raw.json"
+
+  jq '{
+    id,
+    url,
+    note_events,
+    issues_events,
+    enable_ssl_verification,
+    push_events,
+    merge_requests_events,
+    token_present,
+    signing_token_present
+  }' "${EVIDENCE_DIR}/webhook-created-raw.json" >"${EVIDENCE_DIR}/webhook.json"
+
+  cat "${EVIDENCE_DIR}/webhook.json"
 }
 
 write_workflow() {
@@ -515,6 +590,20 @@ token_boundary_result() {
   fi
 }
 
+webhook_result() {
+  if [ ! -f "${EVIDENCE_DIR}/webhook.json" ]; then
+    printf 'Pending'
+    return
+  fi
+
+  if jq -e '.url != null and .note_events == true and .enable_ssl_verification == true' \
+    "${EVIDENCE_DIR}/webhook.json" >/dev/null; then
+    printf 'Pass'
+  else
+    printf 'Fail'
+  fi
+}
+
 write_report_row() {
   local check="$1"
   local evidence="$2"
@@ -529,7 +618,7 @@ render_report() {
   local report_file="${EVIDENCE_DIR}/stage2-report.md"
   local success_url failure_url project_url
   local ack_count completion_count failure_count
-  local success_label_result failure_label_result duplicate_result token_result
+  local success_label_result failure_label_result duplicate_result webhook_setup_result token_result
 
   success_url="$(json_value "$(issue_file success)" '.web_url')"
   failure_url="$(json_value "$(issue_file failure)" '.web_url')"
@@ -540,6 +629,7 @@ render_report() {
   success_label_result="$(label_present_result "${EVIDENCE_DIR}/success-final-issue.json" 'soc::human-review')"
   failure_label_result="$(label_present_result "${EVIDENCE_DIR}/failure-final-issue.json" 'soc::failed')"
   duplicate_result="$(json_result "${EVIDENCE_DIR}/duplicate-verification.json")"
+  webhook_setup_result="$(webhook_result)"
   token_result="$(token_boundary_result)"
 
   {
@@ -556,6 +646,7 @@ render_report() {
     printf '```bash\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-webhook\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success\n'
     printf 'cd elixir\n'
     printf 'mix setup\n'
@@ -588,6 +679,7 @@ render_report() {
     printf '| --- | --- | --- |\n'
     write_report_row 'Staging project confirmed' "$project_url" "$(if [ "$project_url" = "Pending" ]; then printf 'Pending'; else printf 'Pass'; fi)"
     write_report_row 'Required labels setup attempted' "${EVIDENCE_DIR}/labels.jsonl" "$(if [ -f "${EVIDENCE_DIR}/labels.jsonl" ]; then printf 'Pass'; else printf 'Pending'; fi)"
+    write_report_row 'Webhook configured for note events' "${EVIDENCE_DIR}/webhook.json" "$webhook_setup_result"
     write_report_row 'Success issue reached soc::human-review' "${EVIDENCE_DIR}/success-final-issue.json" "$success_label_result"
     write_report_row 'Acknowledgement comment count' "$ack_count" "$(if [ "$ack_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
     write_report_row 'Completion comment count' "$completion_count" "$(if [ "$completion_count" -eq 1 ] 2>/dev/null; then printf 'Pass'; else printf 'Pending'; fi)"
@@ -616,6 +708,8 @@ main() {
   case "$command" in
     preflight) preflight ;;
     ensure-labels) ensure_labels ;;
+    list-webhooks) list_webhooks ;;
+    ensure-webhook) ensure_webhook ;;
     write-workflow) write_workflow "${1:-}" ;;
     create-success-issue) create_issue success ;;
     create-failure-issue) create_issue failure ;;
