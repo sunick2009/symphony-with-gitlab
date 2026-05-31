@@ -11,7 +11,7 @@ defmodule SymphonyElixir.GitLab.StateStore do
   @schema_version 1
   @call_timeout 60_000
 
-  @type writeback_fun :: (-> :ok | {:error, term()})
+  @type writeback_fun :: (-> :ok | {:ok, map()} | {:error, term()})
   @type writeback_result :: :ok | {:error, term()}
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -43,6 +43,11 @@ defmodule SymphonyElixir.GitLab.StateStore do
   def record_issue_run_state(issue_iid, lifecycle_state)
       when is_binary(issue_iid) and is_binary(lifecycle_state) do
     call({:record_issue_run_state, state_path(), issue_iid, lifecycle_state})
+  end
+
+  @spec record_issue_run_snapshot(String.t(), map()) :: :ok | {:error, term()}
+  def record_issue_run_snapshot(issue_iid, attrs) when is_binary(issue_iid) and is_map(attrs) do
+    call({:record_issue_run_snapshot, state_path(), issue_iid, attrs})
   end
 
   @spec state_path() :: Path.t()
@@ -147,6 +152,15 @@ defmodule SymphonyElixir.GitLab.StateStore do
     {:reply, reply, state}
   end
 
+  def handle_call({:record_issue_run_snapshot, path, issue_iid, attrs}, _from, state) do
+    reply =
+      update_state(path, fn stored ->
+        {:ok, put_issue_run_snapshot(stored, issue_iid, attrs)}
+      end)
+
+    {:reply, reply, state}
+  end
+
   defp execute_writeback(path, operation_key, attrs, fun) do
     case fun.() do
       :ok ->
@@ -154,6 +168,14 @@ defmodule SymphonyElixir.GitLab.StateStore do
           "status" => "done",
           "attempts" => writeback_attempts(attrs),
           "completed_at" => timestamp()
+        })
+
+      {:ok, metadata} when is_map(metadata) ->
+        update_writeback(path, operation_key, attrs, %{
+          "status" => "done",
+          "attempts" => writeback_attempts(attrs),
+          "completed_at" => timestamp(),
+          "result_metadata" => stringify_keys(metadata)
         })
 
       {:error, reason} = error ->
@@ -189,7 +211,23 @@ defmodule SymphonyElixir.GitLab.StateStore do
       processing =
         attrs
         |> stringify_keys()
-        |> Map.take(["operation", "issue_iid", "lifecycle_state", "comment_key"])
+        |> Map.take([
+          "operation",
+          "issue_iid",
+          "lifecycle_state",
+          "comment_key",
+          "run_fingerprint",
+          "branch_name",
+          "target_ref",
+          "commit_message",
+          "source_branch",
+          "target_branch",
+          "title",
+          "merge_request_iid",
+          "merge_request_url",
+          "pipeline_status",
+          "status_class"
+        ])
         |> Map.merge(%{
           "status" => "processing",
           "attempts" => 0,
@@ -213,7 +251,23 @@ defmodule SymphonyElixir.GitLab.StateStore do
       writeback =
         attrs
         |> stringify_keys()
-        |> Map.take(["operation", "issue_iid", "lifecycle_state", "comment_key"])
+        |> Map.take([
+          "operation",
+          "issue_iid",
+          "lifecycle_state",
+          "comment_key",
+          "run_fingerprint",
+          "branch_name",
+          "target_ref",
+          "commit_message",
+          "source_branch",
+          "target_branch",
+          "title",
+          "merge_request_iid",
+          "merge_request_url",
+          "pipeline_status",
+          "status_class"
+        ])
         |> Map.merge(existing)
         |> Map.merge(updates)
         |> Map.put("updated_at", timestamp())
@@ -221,10 +275,15 @@ defmodule SymphonyElixir.GitLab.StateStore do
       stored = put_in(stored, ["writebacks", operation_key], writeback)
 
       stored =
-        if writeback["status"] == "done" and writeback["operation"] == "transition" do
-          put_issue_run_state(stored, writeback["issue_iid"], writeback["lifecycle_state"])
-        else
-          stored
+        cond do
+          writeback["status"] == "done" and writeback["operation"] == "transition" ->
+            put_issue_run_state(stored, writeback["issue_iid"], writeback["lifecycle_state"])
+
+          writeback["status"] == "done" ->
+            put_issue_run_snapshot_from_writeback(stored, writeback)
+
+          true ->
+            stored
         end
 
       {:ok, stored}
@@ -243,6 +302,52 @@ defmodule SymphonyElixir.GitLab.StateStore do
 
   defp put_issue_run_state(stored, _issue_iid, _lifecycle_state), do: stored
 
+  defp put_issue_run_snapshot_from_writeback(stored, %{"issue_iid" => issue_iid} = writeback)
+       when is_binary(issue_iid) do
+    snapshot_attrs =
+      %{}
+      |> maybe_put_snapshot_field("run_fingerprint", writeback["run_fingerprint"])
+      |> maybe_put_snapshot_field("branch_name", writeback["branch_name"])
+      |> maybe_put_snapshot_field("target_ref", writeback["target_ref"])
+      |> maybe_put_snapshot_field("source_branch", writeback["source_branch"])
+      |> maybe_put_snapshot_field("target_branch", writeback["target_branch"])
+      |> maybe_put_snapshot_field("merge_request_iid", writeback["merge_request_iid"])
+      |> maybe_put_snapshot_field("merge_request_url", writeback["merge_request_url"])
+      |> maybe_put_snapshot_field("pipeline_status", writeback["pipeline_status"])
+      |> maybe_put_snapshot_field("status_class", writeback["status_class"])
+      |> merge_result_metadata(Map.get(writeback, "result_metadata"))
+
+    put_issue_run_snapshot(stored, issue_iid, snapshot_attrs)
+  end
+
+  defp put_issue_run_snapshot_from_writeback(stored, _writeback), do: stored
+
+  defp put_issue_run_snapshot(stored, issue_iid, attrs) when is_binary(issue_iid) and is_map(attrs) do
+    issue_run = get_in(stored, ["issue_runs", issue_iid]) || %{}
+    stage4 = Map.get(issue_run, "stage4", %{})
+
+    updated_stage4 =
+      stage4
+      |> Map.merge(stringify_keys(attrs))
+      |> Map.put("updated_at", timestamp())
+
+    issue_run =
+      issue_run
+      |> Map.put("stage4", updated_stage4)
+      |> Map.put("updated_at", timestamp())
+
+    put_in(stored, ["issue_runs", issue_iid], issue_run)
+  end
+
+  defp put_issue_run_snapshot(stored, _issue_iid, _attrs), do: stored
+
+  defp maybe_put_snapshot_field(snapshot, _key, nil), do: snapshot
+  defp maybe_put_snapshot_field(snapshot, _key, ""), do: snapshot
+  defp maybe_put_snapshot_field(snapshot, key, value), do: Map.put(snapshot, key, value)
+
+  defp merge_result_metadata(snapshot, metadata) when is_map(metadata), do: Map.merge(snapshot, metadata)
+  defp merge_result_metadata(snapshot, _metadata), do: snapshot
+
   defp call(message) do
     case ensure_started() do
       {:ok, _pid} -> GenServer.call(__MODULE__, message, @call_timeout)
@@ -254,9 +359,55 @@ defmodule SymphonyElixir.GitLab.StateStore do
   defp ensure_started do
     case Process.whereis(__MODULE__) do
       pid when is_pid(pid) -> {:ok, pid}
-      nil -> start_link()
+      nil -> ensure_started_via_supervisor()
     end
   end
+
+  defp ensure_started_via_supervisor do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, __MODULE__) do
+          {:ok, child_pid} when is_pid(child_pid) ->
+            {:ok, child_pid}
+
+          {:ok, child_pid, _info} when is_pid(child_pid) ->
+            {:ok, child_pid}
+
+          {:error, :running} ->
+            wait_for_registered_process()
+
+          {:error, :restarting} ->
+            wait_for_registered_process()
+
+          {:error, :not_found} ->
+            start_link()
+
+          {:error, {:already_started, child_pid}} when is_pid(child_pid) ->
+            {:ok, child_pid}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      nil ->
+        start_link()
+    end
+  end
+
+  defp wait_for_registered_process(attempt \\ 1)
+
+  defp wait_for_registered_process(attempt) when attempt <= 20 do
+    case Process.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        {:ok, pid}
+
+      nil ->
+        Process.sleep(10)
+        wait_for_registered_process(attempt + 1)
+    end
+  end
+
+  defp wait_for_registered_process(_attempt), do: start_link()
 
   defp update_state(path, fun) when is_function(fun, 1) do
     with {:ok, state} <- load_state(path),
