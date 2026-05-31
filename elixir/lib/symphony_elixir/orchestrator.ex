@@ -1014,7 +1014,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id, running_entry) do
-    maybe_finalize_gitlab_mr_dry_run(issue_id, running_entry)
+    maybe_finalize_gitlab_mr_completion(issue_id, running_entry)
     maybe_update_gitlab_run_lifecycle(issue_id, "soc::human-review")
     maybe_create_gitlab_run_comment(issue_id, "Symphony agent run completed and moved this issue to `soc::human-review`.")
 
@@ -1220,11 +1220,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_create_gitlab_run_comment(_issue_id, _body), do: :ok
 
-  defp maybe_finalize_gitlab_mr_dry_run(issue_id, %{issue: %Issue{} = issue} = running_entry)
+  defp maybe_finalize_gitlab_mr_completion(issue_id, %{issue: %Issue{} = issue} = running_entry)
        when is_binary(issue_id) do
     workspace_path = Map.get(running_entry, :workspace_path) || fallback_workspace_path(issue)
 
-    case MRWorkflow.finalize_dry_run(issue, workspace_path, []) do
+    case MRWorkflow.finalize_issue_completion(issue, workspace_path, []) do
       {:ok, {:planned, plan}} ->
         Logger.info("Recorded GitLab MR dry-run finalization plan issue_id=#{issue_id} branch=#{plan.source_branch} action_digest=#{plan.action_digest}")
 
@@ -1235,13 +1235,17 @@ defmodule SymphonyElixir.Orchestrator do
 
         :ok
 
+      {:ok, {:executed, plan, stage4_snapshot}} ->
+        Logger.info("Executed GitLab MR live finalization issue_id=#{issue_id} branch=#{plan.source_branch} mr_url=#{Map.get(stage4_snapshot, "merge_request_url")}")
+
+        :ok
+
       {:error, reason} ->
-        Logger.warning("GitLab MR dry-run finalization failed for issue_id=#{issue_id}: #{inspect(reason)}")
+        Logger.warning("GitLab MR finalization failed for issue_id=#{issue_id}: #{inspect(reason)}")
 
         _ =
           StateStore.record_issue_run_snapshot(issue_id, %{
-            stage4_status: "dry-run-error",
-            dry_run: true,
+            stage4_status: "finalization-error",
             stage4_error: inspect(reason),
             workspace_path: workspace_path
           })
@@ -1250,7 +1254,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_finalize_gitlab_mr_dry_run(_issue_id, _running_entry), do: :ok
+  defp maybe_finalize_gitlab_mr_completion(_issue_id, _running_entry), do: :ok
 
   defp fallback_workspace_path(%Issue{identifier: identifier}) when is_binary(identifier) do
     safe_identifier = String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")

@@ -26,6 +26,20 @@ export STAGE4_CONFIRM_DISPOSABLE_PROJECT=yes
 export STAGE4_RUN_ID=symphony-stage4-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
+Set these `WORKFLOW.md` values for live staging MR creation:
+
+```yaml
+tracker:
+  kind: gitlab
+  endpoint: https://gitlab.example.com
+  api_key: $GITLAB_API_TOKEN
+  project_slug: <group/staging-project>
+  webhook_secret: $GITLAB_WEBHOOK_SECRET
+  state_path: /tmp/symphony-stage4/gitlab-state.json
+  stage4_live_mutation: true
+  stage4_allowed_project_slugs: ["<group/staging-project>"]
+```
+
 ## Required Token Properties
 
 - Token type: project access token or approved project-scoped bot credential
@@ -37,30 +51,56 @@ export STAGE4_RUN_ID=symphony-stage4-$(date -u +%Y%m%dT%H%M%SZ)
   - runner management scopes
   - GitLab Duo scopes
 
+Live mutation stays disabled by default. Setting `tracker.stage4_live_mutation:
+true` is insufficient by itself; `tracker.project_slug` must also be present in
+`tracker.stage4_allowed_project_slugs`, otherwise Symphony blocks live
+repository mutation and records a Stage 4 finalization error instead.
+
 ## Validation Outline
 
 1. Prepare labels and webhook exactly as Stage 3.5 requires.
 2. Add or confirm a disposable repository target branch, typically the default branch.
-3. Trigger `/soc run` on a staging issue that produces a bounded artifact set.
+3. Produce a bounded artifact manifest at `.symphony/gitlab_artifacts.json`.
+4. Trigger `/soc run` on a staging issue that produces the approved artifact set.
+5. For the helper-based validation path, you may use:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow stage4-live
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-stage4-issue
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-stage4-live
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
+```
+
 4. Verify:
    - one deterministic source branch is created
    - one commit is created through the adapter path
    - one MR is opened against the configured target branch
    - the issue receives the MR link and moves to `soc::human-review`
-5. Observe MR pipeline status and verify issue writeback for:
+6. Observe MR pipeline status and verify issue writeback for:
    - pending or running
    - success
    - failure or canceled
-6. Re-run the same completion path or restart Symphony and verify duplicate suppression.
-7. Record token-boundary evidence that `GITLAB_API_TOKEN` and `GITLAB_WEBHOOK_SECRET` remain absent from the Codex process.
+7. Re-run the same completion path or restart Symphony and verify duplicate suppression.
+8. Record token-boundary evidence that `GITLAB_API_TOKEN` and `GITLAB_WEBHOOK_SECRET` remain absent from the Codex process.
 
 ## Expected Validation Evidence
 
 - Issue URL
 - Source branch name
+- Expected branch pattern: `soc/issue-<iid>/<run-fingerprint>`
 - Commit SHA
 - MR URL and IID
+- Expected MR title: `Issue #<iid>: <issue title>`
+- Expected MR description content: issue identifier, manifest digest, and action digest
 - Latest observed pipeline ID and status
 - Issue note excerpts for MR link and CI result
 - Sanitized token-boundary trace
 - Evidence that retries did not create duplicate branches or merge requests
+
+## Rollback and Cleanup
+
+- Close the disposable MR if the validation run is no longer needed.
+- Delete the disposable staging branch after confirming no further retry or CI observation is required.
+- Preserve the state file until evidence capture is complete; remove it only while Symphony is stopped.

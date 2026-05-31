@@ -155,6 +155,32 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert state["issue_runs"]["42"]["stage4"]["action_digest"] == plan.action_digest
   end
 
+  test "live mutation remains disabled by default during issue finalization" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/live_disabled.ex",
+          "workspace_source_path" => "out/live_disabled.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/live_disabled.ex", "defmodule LiveDisabled do\nend\n")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_issue_completion(issue, workspace, [])
+    assert plan.no_op == false
+
+    refute_receive {:gitlab_branch_created, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_merge_request_created, _, _, _}
+  end
+
   test "dry-run finalization records no-op when the manifest is missing" do
     configure_mr_workflow_test()
     workspace = create_workspace_fixture!()
@@ -586,6 +612,161 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert state["issue_runs"]["42"]["stage4"]["merge_request_iid"] == "11"
   end
 
+  test "live mutation executes branch commit mr and link writeback when staging-live is enabled" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/live_enabled.ex",
+          "workspace_source_path" => "out/live_enabled.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/live_enabled.ex", "defmodule LiveEnabled do\nend\n")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:executed, plan, stage4_snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    assert_receive {:gitlab_branch_created, branch_name, "main"}
+    assert branch_name == plan.source_branch
+    assert_receive {:gitlab_commit_created, ^branch_name, _, _}
+    assert_receive {:gitlab_merge_request_created, ^branch_name, "main", _title}
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "merge request"
+
+    assert stage4_snapshot["stage4_status"] == "live-mr-created"
+    assert stage4_snapshot["merge_request_url"] =~ "/merge_requests/"
+    assert stage4_snapshot["commit_sha"] =~ "sha-"
+  end
+
+  test "live mutation guard blocks non-allowlisted projects" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/disposable-only"]
+    )
+
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/live_guard.ex",
+          "workspace_source_path" => "out/live_guard.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/live_guard.ex", "defmodule LiveGuard do\nend\n")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:stage4_live_project_not_allowlisted, "group/project"}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_merge_request_created, _, _, _}
+  end
+
+  test "live mutation reuses an existing branch and merge request idempotently" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/live_reuse.ex",
+          "workspace_source_path" => "out/live_reuse.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/live_reuse.ex", "defmodule LiveReuse do\nend\n")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, source_branch], %{
+      "branch_name" => source_branch,
+      "name" => source_branch,
+      "commit_id" => "main"
+    })
+
+    remote_put([:merge_requests, "88"], %{
+      "merge_request_iid" => "88",
+      "merge_request_url" => "https://gitlab.example.com/group/project/-/merge_requests/88",
+      "source_branch" => source_branch,
+      "target_branch" => "main",
+      "title" => plan.merge_request_title,
+      "description" => plan.merge_request_description,
+      "state" => "opened"
+    })
+
+    assert {:ok, {:executed, _plan, stage4_snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, ^source_branch, "main"}
+    assert_receive {:gitlab_commit_created, ^source_branch, _, _}
+    refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "/merge_requests/88"
+    assert stage4_snapshot["merge_request_iid"] == "88"
+  end
+
+  test "live mutation blocks changed digest retries for the same run fingerprint" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/live_conflict.ex",
+          "workspace_source_path" => "out/live_conflict.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/live_conflict.ex", "defmodule LiveConflict do\nend\n")
+
+    assert {:ok, {:executed, first_plan, _snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    assert_receive {:gitlab_commit_created, branch_name, _, _}
+    assert branch_name == first_plan.source_branch
+
+    write_workspace_file!(workspace, "out/live_conflict.ex", "defmodule LiveConflict do\n  @x 1\nend\n")
+
+    assert {:error, {:dry_run_conflict, "42", _conflict}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_commit_created, ^branch_name, _, _}
+  end
+
   test "mr link and ci failure writeback remain adapter-owned and idempotent" do
     configure_mr_workflow_test()
 
@@ -659,16 +840,22 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     )
   end
 
-  defp configure_mr_workflow_test do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "gitlab",
-      tracker_endpoint: "https://gitlab.example.com",
-      tracker_api_token: "token",
-      tracker_project_slug: "group/project",
-      tracker_webhook_secret: "secret",
-      tracker_state_path: unique_gitlab_state_path(),
-      tracker_active_states: ["soc::queued"],
-      tracker_terminal_states: ["soc::done", "soc::failed"]
+  defp configure_mr_workflow_test(overrides \\ []) do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      Keyword.merge(
+        [
+          tracker_kind: "gitlab",
+          tracker_endpoint: "https://gitlab.example.com",
+          tracker_api_token: "token",
+          tracker_project_slug: "group/project",
+          tracker_webhook_secret: "secret",
+          tracker_state_path: unique_gitlab_state_path(),
+          tracker_active_states: ["soc::queued"],
+          tracker_terminal_states: ["soc::done", "soc::failed"]
+        ],
+        overrides
+      )
     )
 
     {:ok, remote_state} =

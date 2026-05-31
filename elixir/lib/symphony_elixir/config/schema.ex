@@ -52,6 +52,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:webhook_secret, :string)
       field(:state_path, :string)
+      field(:stage4_live_mutation, :boolean, default: false)
+      field(:stage4_allowed_project_slugs, {:array, :string}, default: [])
       field(:writeback_max_attempts, :integer, default: 3)
       field(:writeback_base_backoff_ms, :integer, default: 250)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
@@ -71,6 +73,8 @@ defmodule SymphonyElixir.Config.Schema do
           :assignee,
           :webhook_secret,
           :state_path,
+          :stage4_live_mutation,
+          :stage4_allowed_project_slugs,
           :writeback_max_attempts,
           :writeback_base_backoff_ms,
           :active_states,

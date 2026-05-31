@@ -104,6 +104,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_assignee: nil,
           tracker_webhook_secret: nil,
           tracker_state_path: nil,
+          tracker_stage4_live_mutation: false,
+          tracker_stage4_allowed_project_slugs: [],
           tracker_writeback_max_attempts: 3,
           tracker_writeback_base_backoff_ms: 0,
           tracker_active_states: ["Todo", "In Progress"],
@@ -145,6 +147,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_webhook_secret = Keyword.get(config, :tracker_webhook_secret)
     tracker_state_path = Keyword.get(config, :tracker_state_path)
+    tracker_stage4_live_mutation = Keyword.get(config, :tracker_stage4_live_mutation)
+    tracker_stage4_allowed_project_slugs = Keyword.get(config, :tracker_stage4_allowed_project_slugs)
     tracker_writeback_max_attempts = Keyword.get(config, :tracker_writeback_max_attempts)
     tracker_writeback_base_backoff_ms = Keyword.get(config, :tracker_writeback_base_backoff_ms)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
@@ -187,6 +191,8 @@ defmodule SymphonyElixir.TestSupport do
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  webhook_secret: #{yaml_value(tracker_webhook_secret)}",
         "  state_path: #{yaml_value(tracker_state_path)}",
+        "  stage4_live_mutation: #{yaml_value(tracker_stage4_live_mutation)}",
+        "  stage4_allowed_project_slugs: #{yaml_value(tracker_stage4_allowed_project_slugs)}",
         "  writeback_max_attempts: #{yaml_value(tracker_writeback_max_attempts)}",
         "  writeback_base_backoff_ms: #{yaml_value(tracker_writeback_base_backoff_ms)}",
         "  active_states: #{yaml_value(tracker_active_states)}",

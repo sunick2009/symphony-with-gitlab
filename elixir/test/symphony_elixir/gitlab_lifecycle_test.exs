@@ -73,7 +73,12 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     def create_merge_request(source_branch, target_branch, title, description)
         when is_binary(source_branch) and is_binary(target_branch) and is_binary(title) do
       send(test_recipient(), {:gitlab_live_mr_create, source_branch, target_branch, title, description})
-      {:ok, %{"merge_request_iid" => "dry-run-should-not-happen"}}
+
+      {:ok,
+       %{
+         "merge_request_iid" => "dry-run-should-not-happen",
+         "merge_request_url" => "https://gitlab.example.com/group/project/-/merge_requests/dry-run-should-not-happen"
+       }}
     end
 
     @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]}
@@ -232,18 +237,82 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     end
   end
 
+  test "successful gitlab issue completion creates a live staging branch commit and merge request when enabled" do
+    configure_lifecycle_test(DryRunSuccessfulRunner,
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    {:ok, pid} = Orchestrator.start_link(name: :"gitlab-lifecycle-live-#{System.unique_integer([:positive])}")
+
+    try do
+      assert_receive {:gitlab_labels, "42", ["soc::running"], _removed}, 1_000
+      assert_receive {:agent_run, "42", recipient} when is_pid(recipient)
+      assert_receive {:gitlab_live_branch_fetch, branch_name}, 1_000
+      assert branch_name =~ "soc/issue-42/"
+      assert_receive {:gitlab_live_branch_create, ^branch_name, "main"}, 1_000
+      assert_receive {:gitlab_live_commit_create, ^branch_name, _message, _actions}, 1_000
+      assert_receive {:gitlab_live_mr_fetch, ^branch_name, "main"}, 1_000
+      assert_receive {:gitlab_live_mr_create, ^branch_name, "main", _title, _description}, 1_000
+      assert_receive {:gitlab_labels, "42", ["soc::human-review"], _removed}, 1_000
+      assert_receive {:gitlab_comment, "42", first_body}, 1_000
+      assert_receive {:gitlab_comment, "42", second_body}, 1_000
+
+      assert Enum.any?([first_body, second_body], &String.contains?(&1, "merge request"))
+      assert Enum.any?([first_body, second_body], &String.contains?(&1, "soc::human-review"))
+
+      stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
+      assert stage4["stage4_status"] == "live-mr-created"
+      assert stage4["merge_request_url"] =~ "/merge_requests/"
+      assert stage4["commit_sha"] == "dry-run-should-not-happen"
+    after
+      GenServer.stop(pid)
+    end
+  end
+
+  test "staging-live guard prevents accidental production targeting during completion" do
+    configure_lifecycle_test(DryRunSuccessfulRunner,
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/disposable-only"]
+    )
+
+    {:ok, pid} = Orchestrator.start_link(name: :"gitlab-lifecycle-guard-#{System.unique_integer([:positive])}")
+
+    try do
+      assert_receive {:gitlab_labels, "42", ["soc::running"], _removed}, 1_000
+      assert_receive {:agent_run, "42", recipient} when is_pid(recipient)
+      refute_receive {:gitlab_live_branch_fetch, _branch_name}, 300
+      refute_receive {:gitlab_live_branch_create, _, _}, 300
+      refute_receive {:gitlab_live_commit_create, _, _, _}, 300
+      refute_receive {:gitlab_live_mr_create, _, _, _, _}, 300
+      assert_receive {:gitlab_labels, "42", ["soc::human-review"], _removed}, 1_000
+
+      stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
+      assert stage4["stage4_status"] == "finalization-error"
+      assert stage4["stage4_error"] =~ "stage4_live_project_not_allowlisted"
+    after
+      GenServer.stop(pid)
+    end
+  end
+
   defp configure_lifecycle_test(agent_runner_module, opts \\ []) do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "gitlab",
-      tracker_endpoint: "https://gitlab.example.com",
-      tracker_api_token: "token",
-      tracker_project_slug: "group/project",
-      tracker_webhook_secret: "secret",
-      tracker_state_path: Path.join(System.tmp_dir!(), "symphony-gitlab-lifecycle-state-#{System.unique_integer([:positive])}.json"),
-      tracker_active_states: ["soc::queued"],
-      tracker_terminal_states: ["soc::done", "soc::failed"],
-      poll_interval_ms: 10,
-      hook_after_run: Keyword.get(opts, :hook_after_run)
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      Keyword.merge(
+        [
+          tracker_kind: "gitlab",
+          tracker_endpoint: "https://gitlab.example.com",
+          tracker_api_token: "token",
+          tracker_project_slug: "group/project",
+          tracker_webhook_secret: "secret",
+          tracker_state_path: Path.join(System.tmp_dir!(), "symphony-gitlab-lifecycle-state-#{System.unique_integer([:positive])}.json"),
+          tracker_active_states: ["soc::queued"],
+          tracker_terminal_states: ["soc::done", "soc::failed"],
+          poll_interval_ms: 10,
+          hook_after_run: Keyword.get(opts, :hook_after_run)
+        ],
+        Keyword.drop(opts, [:hook_after_run])
+      )
     )
 
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)

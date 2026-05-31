@@ -20,7 +20,7 @@
 
 - [x] T001 Record the chosen Stage 4 repository mutation strategy and security rationale in `specs/002-gitlab-mr-workflow/research.md`
 - [x] T002 Extend Stage 4 planning notes for required GitLab APIs, staging boundaries, and CI reconciliation in `specs/002-gitlab-mr-workflow/plan.md`
-- [ ] T003 Add Stage 4 overview and staging-only warning to `elixir/README.md`
+- [x] T003 Add Stage 4 overview and staging-only warning to `elixir/README.md`
 
 ---
 
@@ -56,10 +56,8 @@
 - [x] T012 [P] [US1] Implement adapter-owned artifact manifest collection in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [x] T013 [P] [US1] Implement deterministic branch naming and provenance checks in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [x] T014 [US1] Implement Branches API and Commits API repository mutation flow in `elixir/lib/symphony_elixir/gitlab/client.ex`
-- [ ] T015 [US1] Implement merge request creation and issue-link writeback in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-  Note: issue-link writeback helper and dry-run MR finalization planner exist; live completion-driven MR mutation remains incomplete.
-- [ ] T016 [US1] Trigger Stage 4 MR finalization from normal GitLab run completion in `elixir/lib/symphony_elixir/orchestrator.ex`
-  Note: dry-run finalization handoff is complete; live MR mutation remains intentionally disabled in this phase.
+- [x] T015 [US1] Implement merge request creation and issue-link writeback in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T016 [US1] Trigger Stage 4 MR finalization from normal GitLab run completion in `elixir/lib/symphony_elixir/orchestrator.ex`
 
 **Checkpoint**: Stage 4 can create a reviewable merge request and move the issue to `soc::human-review`.
 
@@ -123,14 +121,13 @@
 
 ### Tests for User Story 4
 
-- [ ] T031 [P] [US4] Add token-boundary regression coverage for Stage 4 completion paths in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
-  Note: foundational Stage 4 token-boundary coverage exists in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`; completion-path coverage remains incomplete.
+- [x] T031 [P] [US4] Add token-boundary regression coverage for Stage 4 completion paths in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 4
 
-- [ ] T032 [P] [US4] Document Stage 4 token scopes, branch naming, and CI behavior in `elixir/README.md`
-- [ ] T033 [P] [US4] Add Stage 4 staging validation steps in `specs/002-gitlab-mr-workflow/quickstart.md`
-- [ ] T034 [US4] Extend the staging helper workflow for MR creation and CI observation in `specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh`
+- [x] T032 [P] [US4] Document Stage 4 token scopes, branch naming, and CI behavior in `elixir/README.md`
+- [x] T033 [P] [US4] Add Stage 4 staging validation steps in `specs/002-gitlab-mr-workflow/quickstart.md`
+- [x] T034 [US4] Extend the staging helper workflow for MR creation and CI observation in `specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh`
 - [ ] T035 [US4] Record Stage 4 staging evidence and known risks in `specs/002-gitlab-mr-workflow/plan.md`
 
 **Checkpoint**: Stage 4 is documented and staging validation is reproducible.

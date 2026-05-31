@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
 
   require Logger
 
-  alias SymphonyElixir.{GitLab.Adapter, GitLab.StateStore, Linear.Issue, PathSafety}
+  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.StateStore, Linear.Issue, PathSafety}
 
   @branch_prefix "soc/issue-"
   @manifest_relpath ".symphony/gitlab_artifacts.json"
@@ -110,6 +110,21 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
     do_finalize_dry_run(struct(Issue, issue), workspace_path, opts)
   end
 
+  @spec finalize_issue_completion(Issue.t() | map(), Path.t() | nil, keyword()) ::
+          {:ok, {:planned, dry_run_plan()}}
+          | {:ok, {:noop, dry_run_plan()}}
+          | {:ok, {:executed, dry_run_plan(), map()}}
+          | {:error, term()}
+  def finalize_issue_completion(%Issue{} = issue, workspace_path, opts) do
+    with {:ok, result} <- finalize_dry_run(issue, workspace_path, opts) do
+      maybe_execute_live_plan(issue, result, opts)
+    end
+  end
+
+  def finalize_issue_completion(%{id: _issue_iid} = issue, workspace_path, opts) do
+    finalize_issue_completion(struct(Issue, issue), workspace_path, opts)
+  end
+
   @spec write_merge_request_link_comment(String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
   def write_merge_request_link_comment(issue_iid, run_fingerprint, merge_request_url, source_branch)
@@ -179,6 +194,173 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
             end
           end
       end
+    end
+  end
+
+  defp maybe_execute_live_plan(_issue, {:noop, plan}, _opts), do: {:ok, {:noop, plan}}
+
+  defp maybe_execute_live_plan(issue, {:planned, plan}, opts) do
+    case live_mutation_guard(issue, opts) do
+      :enabled ->
+        execute_live_plan(issue, plan, opts)
+
+      {:disabled, reason} ->
+        Logger.info("Stage 4 live mutation disabled issue_id=#{issue.id} reason=#{inspect(reason)}")
+        {:ok, {:planned, plan}}
+
+      {:error, reason} ->
+        _ =
+          StateStore.record_issue_run_snapshot(issue.id, %{
+            stage4_status: "live-mutation-blocked",
+            dry_run: true,
+            live_mutation_enabled: false,
+            live_mutation_guard_reason: inspect(reason)
+          })
+
+        {:error, reason}
+    end
+  end
+
+  defp live_mutation_guard(%Issue{}, opts) when is_list(opts) do
+    tracker = Keyword.get(opts, :tracker_settings) || Config.settings!().tracker
+    project_slug = tracker.project_slug
+    live_mutation? = tracker.stage4_live_mutation == true
+    allowed_project_slugs = tracker.stage4_allowed_project_slugs || []
+
+    cond do
+      tracker.kind != "gitlab" ->
+        {:disabled, :non_gitlab_tracker}
+
+      not live_mutation? ->
+        {:disabled, :live_mutation_disabled}
+
+      not is_binary(project_slug) or project_slug == "" ->
+        {:error, :missing_gitlab_project_slug}
+
+      project_slug not in allowed_project_slugs ->
+        {:error, {:stage4_live_project_not_allowlisted, project_slug}}
+
+      true ->
+        :enabled
+    end
+  end
+
+  defp execute_live_plan(%Issue{id: issue_iid}, plan, opts)
+       when is_binary(issue_iid) and is_map(plan) and is_list(opts) do
+    with :ok <- validate_live_provenance(issue_iid, plan),
+         :ok <- record_live_execution_start(issue_iid, plan),
+         :ok <- Adapter.create_branch_once(issue_iid, plan.run_fingerprint, plan.source_branch, plan.target_branch),
+         :ok <-
+           Adapter.create_commit_once(
+             issue_iid,
+             plan.run_fingerprint,
+             plan.source_branch,
+             plan.commit_message,
+             plan.commit_actions,
+             manifest_digest: plan.manifest_digest,
+             action_digest: plan.action_digest,
+             start_branch: plan.target_branch
+           ),
+         :ok <-
+           Adapter.create_merge_request_once(
+             issue_iid,
+             plan.run_fingerprint,
+             plan.source_branch,
+             plan.target_branch,
+             plan.merge_request_title,
+             plan.merge_request_description
+           ),
+         {:ok, stage4_snapshot} <- fetch_stage4_snapshot(issue_iid),
+         merge_request_url when is_binary(merge_request_url) <-
+           Map.get(stage4_snapshot, "merge_request_url") || {:error, :missing_merge_request_url},
+         :ok <-
+           write_merge_request_link_comment(
+             issue_iid,
+             plan.run_fingerprint,
+             merge_request_url,
+             plan.source_branch
+           ),
+         :ok <-
+           StateStore.record_issue_run_snapshot(issue_iid, %{
+             stage4_status: "live-mr-created",
+             dry_run: false,
+             live_mutation_enabled: true
+           }),
+         {:ok, updated_stage4_snapshot} <- fetch_stage4_snapshot(issue_iid) do
+      Logger.info("Executed Stage 4 live mutation issue_id=#{issue_iid} branch=#{plan.source_branch} mr_url=#{merge_request_url}")
+
+      {:ok, {:executed, plan, updated_stage4_snapshot}}
+    else
+      {:error, reason} = error ->
+        _ =
+          StateStore.record_issue_run_snapshot(issue_iid, %{
+            stage4_status: "live-mutation-error",
+            dry_run: false,
+            live_mutation_enabled: true,
+            stage4_error: inspect(reason)
+          })
+
+        error
+    end
+  end
+
+  defp validate_live_provenance(issue_iid, plan) when is_binary(issue_iid) and is_map(plan) do
+    with {:ok, stage4_snapshot} <- fetch_stage4_snapshot(issue_iid) do
+      cond do
+        Map.get(stage4_snapshot, "branch_name") not in [nil, "", plan.branch_name] ->
+          {:error, {:live_mutation_conflict, issue_iid, %{existing_branch_name: Map.get(stage4_snapshot, "branch_name"), next_branch_name: plan.branch_name}}}
+
+        Map.get(stage4_snapshot, "run_fingerprint") not in [nil, "", plan.run_fingerprint] ->
+          {:error,
+           {:live_mutation_conflict, issue_iid,
+            %{
+              existing_run_fingerprint: Map.get(stage4_snapshot, "run_fingerprint"),
+              next_run_fingerprint: plan.run_fingerprint
+            }}}
+
+        Map.get(stage4_snapshot, "manifest_digest") not in [nil, plan.manifest_digest] ->
+          {:error,
+           {:live_mutation_conflict, issue_iid,
+            %{
+              existing_manifest_digest: Map.get(stage4_snapshot, "manifest_digest"),
+              next_manifest_digest: plan.manifest_digest
+            }}}
+
+        Map.get(stage4_snapshot, "action_digest") not in [nil, plan.action_digest] ->
+          {:error,
+           {:live_mutation_conflict, issue_iid,
+            %{
+              existing_action_digest: Map.get(stage4_snapshot, "action_digest"),
+              next_action_digest: plan.action_digest
+            }}}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp record_live_execution_start(issue_iid, plan) when is_binary(issue_iid) and is_map(plan) do
+    StateStore.record_issue_run_snapshot(issue_iid, %{
+      stage4_status: "live-mutation-started",
+      dry_run: false,
+      live_mutation_enabled: true,
+      run_fingerprint: plan.run_fingerprint,
+      branch_name: plan.branch_name,
+      target_branch: plan.target_branch,
+      manifest_digest: plan.manifest_digest,
+      collected_artifact_digest: plan.collected_artifact_digest,
+      action_digest: plan.action_digest,
+      commit_message: plan.commit_message,
+      merge_request_title: plan.merge_request_title,
+      no_op: plan.no_op
+    })
+  end
+
+  defp fetch_stage4_snapshot(issue_iid) when is_binary(issue_iid) do
+    case StateStore.fetch_issue_run_snapshot(issue_iid) do
+      {:ok, issue_run} -> {:ok, get_in(issue_run || %{}, ["stage4"]) || %{}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

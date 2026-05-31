@@ -175,6 +175,8 @@ tracker:
   project_slug: group/project
   webhook_secret: $GITLAB_WEBHOOK_SECRET
   state_path: /var/lib/symphony/gitlab-control-plane-state.json
+  stage4_live_mutation: false
+  stage4_allowed_project_slugs: ["group/disposable-staging-project"]
   writeback_max_attempts: 3
   writeback_base_backoff_ms: 250
   active_states: ["soc::queued"]
@@ -183,11 +185,17 @@ tracker:
 
 ### GitLab control-plane setup
 
-GitLab support in this implementation is limited to control-plane operations:
-issue polling, issue note webhooks, `/soc` command parsing, issue comments, and
-label transitions. It does not create branches or merge requests, and it does
-not run Cortex, responder, IOC enrichment, endpoint isolation, or other
-production-impacting actions.
+GitLab support in this implementation is staging-oriented. By default, Symphony
+stays in dry-run mode for Stage 4: it validates the artifact manifest, records
+the branch, commit, and MR plan, and performs no repository mutation. Live
+branch, commit, and merge request creation is enabled only when both of these
+are true:
+
+- `tracker.stage4_live_mutation: true`
+- `tracker.project_slug` is explicitly listed in `tracker.stage4_allowed_project_slugs`
+
+This guard is intended for disposable staging projects only. Do not place a
+production GitLab project in `tracker.stage4_allowed_project_slugs`.
 
 Create these labels in the GitLab project before enabling the workflow:
 
@@ -205,7 +213,10 @@ update issue labels. For GitLab personal, project, or group access tokens, this
 typically requires the `api` scope. GitLab documents `read_api` as read-only,
 so it is not sufficient for adapter-owned comments or label mutation. Do not
 grant `write_repository`, registry, runner, or AI feature scopes for this
-control plane. Store the token outside the repository:
+control plane. Stage 4 live MR creation still uses the GitLab REST API and
+continues to require only `api`; it must not use `write_repository`, and the
+Codex agent must not receive GitLab write credentials or perform credentialed
+`git push`. Store the token outside the repository:
 
 ```bash
 export GITLAB_API_TOKEN=...
@@ -274,6 +285,20 @@ Sample workflow:
    completion comment.
 7. Agent failure moves the issue to `soc::failed` and posts a failure comment.
 
+Stage 4 live staging MR behavior:
+
+- Expected artifact manifest path: `.symphony/gitlab_artifacts.json`
+- Required manifest entries: `repository_path`, `workspace_source_path`, and
+  `action` set to `create` or `update`
+- Expected branch naming: `soc/issue-<iid>/<run-fingerprint>`
+- Expected commit message: `chore(gitlab): update issue #<iid> artifacts`
+- Expected MR title: `Issue #<iid>: <issue title>`
+- MR description includes the issue identifier plus the manifest and action
+  digests for provenance
+- Rollback or cleanup in staging is manual: close the disposable MR, delete the
+  disposable branch, and remove the local Stage 4 state file only while
+  Symphony is stopped
+
 `tracker.active_states` controls GitLab polling discovery. Reconciliation also
 recognizes `soc::claimed`, `soc::running`, and `soc::waiting-input` as
 controlled in-progress lifecycle labels, so long-running agents are not
@@ -289,9 +314,8 @@ Known limitations:
 - GitLab project issue IID is used as the tracker issue ID for this phase.
 - `/soc status`, `/soc retry`, and `/soc cancel` are parsed but return
   not-implemented responses.
-- Branch creation, merge request creation, Cortex integration, IOC enrichment,
-  responder actions, SOC UI, endpoint isolation, and automatic blocking are
-  future phases.
+- Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
+  isolation, and automatic blocking are future phases.
 
 Token boundary:
 

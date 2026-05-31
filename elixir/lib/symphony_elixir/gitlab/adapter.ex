@@ -131,6 +131,8 @@ defmodule SymphonyElixir.GitLab.Adapter do
         operation: "commit",
         issue_iid: issue_id,
         run_fingerprint: run_fingerprint,
+        manifest_digest: Keyword.get(opts, :manifest_digest),
+        action_digest: Keyword.get(opts, :action_digest),
         branch_name: branch_name,
         commit_message: message
       },

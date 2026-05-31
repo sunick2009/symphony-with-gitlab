@@ -27,13 +27,15 @@ Usage:
   gitlab-stage2-validate.sh ensure-labels
   gitlab-stage2-validate.sh list-webhooks
   gitlab-stage2-validate.sh ensure-webhook
-  gitlab-stage2-validate.sh write-workflow success|failure|real-success|real-failure
+  gitlab-stage2-validate.sh write-workflow success|failure|real-success|real-failure|stage4-live
   gitlab-stage2-validate.sh create-success-issue
+  gitlab-stage2-validate.sh create-stage4-issue
   gitlab-stage2-validate.sh post-run success|failure|duplicate
   gitlab-stage2-validate.sh verify-duplicate
   gitlab-stage2-validate.sh poll success|failure
   gitlab-stage2-validate.sh notes success|failure
   gitlab-stage2-validate.sh token-boundary
+  gitlab-stage2-validate.sh verify-stage4-live
   gitlab-stage2-validate.sh evidence-summary
   gitlab-stage2-validate.sh render-report
   gitlab-stage2-validate.sh assert-complete
@@ -333,8 +335,9 @@ ensure_webhook() {
 write_workflow() {
   local mode="${1:-}"
   if [ "$mode" != "success" ] && [ "$mode" != "failure" ] &&
-    [ "$mode" != "real-success" ] && [ "$mode" != "real-failure" ]; then
-    echo "write-workflow requires success, failure, real-success, or real-failure" >&2
+    [ "$mode" != "real-success" ] && [ "$mode" != "real-failure" ] &&
+    [ "$mode" != "stage4-live" ]; then
+    echo "write-workflow requires success, failure, real-success, real-failure, or stage4-live" >&2
     exit 1
   fi
 
@@ -348,8 +351,11 @@ write_workflow() {
   state_path_json="$(jq -Rn --arg value "${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}" '$value')"
 
   local codex_command
+  local stage4_live_mutation="false"
+  local stage4_allowed_project_slugs="[]"
+  local hook_after_run_block=""
 
-  if [ "$mode" = "success" ]; then
+  if [ "$mode" = "success" ] || [ "$mode" = "stage4-live" ]; then
     cat >"$FAKE_CODEX" <<'SH'
 #!/bin/sh
 trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}"
@@ -377,6 +383,24 @@ while IFS= read -r line; do
 done
 SH
     codex_command="${FAKE_CODEX} app-server"
+
+    if [ "$mode" = "stage4-live" ]; then
+      stage4_live_mutation="true"
+      stage4_allowed_project_slugs="[${project_slug_json}]"
+      hook_after_run_block="$(cat <<'EOF'
+hooks:
+  after_run: |
+    mkdir -p .symphony out
+    cat > .symphony/gitlab_artifacts.json <<'JSON'
+    {"version":1,"artifacts":[{"repository_path":"elixir/lib/stage4_live_validation.ex","workspace_source_path":"out/stage4_live_validation.ex","action":"create","content_type":"text/plain","description":"stage4 live validation artifact"}]}
+    JSON
+    cat > out/stage4_live_validation.ex <<'EOF_ELIXIR'
+    defmodule Stage4LiveValidation do
+    end
+    EOF_ELIXIR
+EOF
+)"
+    fi
   elif [ "$mode" = "failure" ]; then
     cat >"$FAKE_CODEX" <<'SH'
 #!/bin/sh
@@ -425,6 +449,7 @@ SH
 codex:
   command: ${codex_command}
   approval_policy: never
+${hook_after_run_block}
 
 tracker:
   kind: gitlab
@@ -433,6 +458,8 @@ tracker:
   project_slug: ${project_slug_json}
   webhook_secret: \$GITLAB_WEBHOOK_SECRET
   state_path: ${state_path_json}
+  stage4_live_mutation: ${stage4_live_mutation}
+  stage4_allowed_project_slugs: ${stage4_allowed_project_slugs}
   writeback_max_attempts: 3
   writeback_base_backoff_ms: 250
   active_states: ["soc::queued"]
@@ -637,6 +664,75 @@ token_boundary() {
   echo "GitLab secret variables were visible to the agent process" >&2
   cat "$AGENT_TRACE" >&2
   exit 1
+}
+
+verify_stage4_live() {
+  require_base_env
+  require_tools
+  init_dirs
+
+  local iid state_file notes_file branch_name commit_sha mr_url encoded_branch encoded_commit note_count
+  iid="$(issue_iid success)"
+  state_file="${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}"
+  notes_file="${EVIDENCE_DIR}/success-notes.json"
+
+  if [ ! -f "$state_file" ]; then
+    echo "missing Stage 4 state file: ${state_file}" >&2
+    exit 1
+  fi
+
+  branch_name="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.branch_name // empty' "$state_file")"
+  commit_sha="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.commit_sha // empty' "$state_file")"
+  mr_url="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.merge_request_url // empty' "$state_file")"
+
+  if [ -z "$branch_name" ] || [ -z "$commit_sha" ] || [ -z "$mr_url" ]; then
+    echo "missing Stage 4 branch, commit, or merge request metadata in state file" >&2
+    exit 1
+  fi
+
+  encoded_branch="$(jq -rn --arg value "$branch_name" '$value | @uri')"
+  encoded_commit="$(jq -rn --arg value "$commit_sha" '$value | @uri')"
+
+  curl_json GET "/repository/branches/${encoded_branch}" >"${EVIDENCE_DIR}/stage4-branch.json"
+  curl_json GET "/repository/commits/${encoded_commit}" >"${EVIDENCE_DIR}/stage4-commit.json"
+
+  curl --fail --silent --show-error \
+    --get \
+    --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+    --data-urlencode "state=opened" \
+    --data-urlencode "source_branch=${branch_name}" \
+    "$(api_url "/merge_requests")" >"${EVIDENCE_DIR}/stage4-merge-requests.json"
+
+  curl_json GET "/issues/${iid}/notes" >"$notes_file"
+  note_count="$(jq --arg mr_url "$mr_url" '[.[] | select(.body | contains($mr_url))] | length' "$notes_file")"
+
+  if [ "$note_count" != "1" ]; then
+    echo "expected exactly one Stage 4 MR link comment, found ${note_count}" >&2
+    exit 1
+  fi
+
+  if ! jq -e 'length == 1' "${EVIDENCE_DIR}/stage4-merge-requests.json" >/dev/null; then
+    echo "expected exactly one open Stage 4 merge request for the source branch" >&2
+    exit 1
+  fi
+
+  jq -n \
+    --arg iid "$iid" \
+    --arg branch_name "$branch_name" \
+    --arg commit_sha "$commit_sha" \
+    --arg mr_url "$mr_url" \
+    --arg token_boundary_result "$(token_boundary_result)" \
+    '{
+      issue_iid: $iid,
+      branch_name: $branch_name,
+      commit_sha: $commit_sha,
+      merge_request_url: $mr_url,
+      merge_request_count: 1,
+      mr_link_comment_count: 1,
+      token_boundary_result: $token_boundary_result
+    }' >"${EVIDENCE_DIR}/stage4-live-validation.json"
+
+  cat "${EVIDENCE_DIR}/stage4-live-validation.json"
 }
 
 evidence_summary() {
@@ -908,12 +1004,14 @@ main() {
     ensure-webhook) ensure_webhook ;;
     write-workflow) write_workflow "${1:-}" ;;
     create-success-issue) create_issue success ;;
+    create-stage4-issue) create_issue success ;;
     create-failure-issue) create_issue failure ;;
     post-run) post_run "${1:-}" ;;
     verify-duplicate) verify_duplicate ;;
     poll) poll_issue "${1:-}" ;;
     notes) fetch_notes "${1:-}" ;;
     token-boundary) token_boundary ;;
+    verify-stage4-live) verify_stage4_live ;;
     evidence-summary) evidence_summary ;;
     render-report) render_report ;;
     assert-complete) assert_complete ;;
