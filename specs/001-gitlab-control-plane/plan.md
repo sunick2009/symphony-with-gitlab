@@ -146,6 +146,47 @@ Out of scope for Stage 3:
 - Merge request creation.
 - Multi-node shared state.
 
+## Stage 3.5 Repository Hygiene and Real Runner Validation Plan
+
+Baseline:
+
+- Stage 3 persistent idempotency, audit storage, and bounded writeback retry are
+  implemented and validated with automated tests and fake-runner staging
+  checks.
+- The local environment has an authenticated `codex app-server` executable.
+
+Required validation:
+
+1. Track `.specify/` and `.agents/` because they are required to reproduce the
+   Spec Kit workflow used by this feature.
+2. Exclude local historical prompts, reference-only workspace notes,
+   unreviewed devcontainer experiments, runtime state, secrets, and staging
+   evidence from version control.
+3. Add a staging helper mode that wraps and executes the real local
+   `codex app-server` while recording only whether GitLab secret variables are
+   absent.
+4. Run the success path with the real runner, then re-run duplicate command,
+   persistent replay suppression after restart, and failure lifecycle checks.
+5. Re-run formatting, full tests, specs check, diff check, clean-room checks,
+   and sanitized staging evidence assertions.
+
+The deterministic real-runner failure check invokes the real Codex executable
+with an invalid CLI option. This validates orchestrator startup-failure mapping
+to `soc::failed`; it is not evidence of a failed model turn.
+
+Observed real-runner gap:
+
+- A real agent turn lasts long enough for orchestrator reconciliation to run
+  while the issue carries `soc::running`.
+- GitLab issue normalization previously recognized only configured polling
+  states and configured terminal states. With `active_states: ["soc::queued"]`,
+  refresh normalized `soc::running` back to GitLab `opened`, then stopped the
+  active agent as non-active.
+- The fix preserves all known GitLab lifecycle labels during normalization and
+  treats `soc::claimed`, `soc::running`, and `soc::waiting-input` as controlled
+  active lifecycle states during GitLab reconciliation. Polling discovery
+  remains limited to configured candidate labels such as `soc::queued`.
+
 ## Phase 0: Research Output
 
 See [research.md](research.md).

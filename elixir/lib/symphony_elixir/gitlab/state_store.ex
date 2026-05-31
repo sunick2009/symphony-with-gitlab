@@ -122,30 +122,12 @@ defmodule SymphonyElixir.GitLab.StateStore do
 
   def handle_call({:writeback_once, path, operation_key, attrs, fun}, _from, state) do
     reply =
-      with {:ok, stored} <- load_state(path) do
-        case get_in(stored, ["writebacks", operation_key, "status"]) do
-          "done" ->
-            :ok
-
-          _ ->
-            processing =
-              attrs
-              |> stringify_keys()
-              |> Map.take(["operation", "issue_iid", "lifecycle_state", "comment_key"])
-              |> Map.merge(%{
-                "status" => "processing",
-                "attempts" => 0,
-                "updated_at" => timestamp()
-              })
-
-            stored
-            |> put_in(["writebacks", operation_key], processing)
-            |> write_state(path)
-            |> case do
-              :ok -> execute_writeback(path, operation_key, attrs, fun)
-              {:error, reason} -> {:error, reason}
-            end
-        end
+      with {:ok, stored} <- load_state(path),
+           :pending <- prepare_writeback(stored, path, operation_key, attrs) do
+        execute_writeback(path, operation_key, attrs, fun)
+      else
+        :done -> :ok
+        {:error, reason} -> {:error, reason}
       end
 
     {:reply, reply, state}
@@ -198,6 +180,30 @@ defmodule SymphonyElixir.GitLab.StateStore do
         })
 
       {:error, {:writeback_exception, reason}}
+  end
+
+  defp prepare_writeback(stored, path, operation_key, attrs) do
+    if get_in(stored, ["writebacks", operation_key, "status"]) == "done" do
+      :done
+    else
+      processing =
+        attrs
+        |> stringify_keys()
+        |> Map.take(["operation", "issue_iid", "lifecycle_state", "comment_key"])
+        |> Map.merge(%{
+          "status" => "processing",
+          "attempts" => 0,
+          "updated_at" => timestamp()
+        })
+
+      stored
+      |> put_in(["writebacks", operation_key], processing)
+      |> write_state(path)
+      |> case do
+        :ok -> :pending
+        {:error, reason} -> {:error, reason}
+      end
+    end
   end
 
   defp update_writeback(path, operation_key, attrs, updates) do

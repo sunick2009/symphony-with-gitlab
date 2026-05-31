@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.GitLabLifecycleTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.GitLab.StateStore
 
   defmodule FakeGitLabClient do
     @spec fetch_candidate_issues() :: {:ok, [Issue.t()]}
@@ -130,13 +131,13 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
       tracker_state_path: Path.join(System.tmp_dir!(), "symphony-gitlab-lifecycle-state-#{System.unique_integer([:positive])}.json"),
       tracker_active_states: ["soc::queued"],
       tracker_terminal_states: ["soc::done", "soc::failed"],
-      poll_interval_ms: 5_000
+      poll_interval_ms: 10
     )
 
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
     Application.put_env(:symphony_elixir, :agent_runner_module, agent_runner_module)
     Application.put_env(:symphony_elixir, :gitlab_test_recipient, self())
     Application.put_env(:symphony_elixir, :gitlab_lifecycle_issue_state, "soc::queued")
-    SymphonyElixir.GitLab.StateStore.reset_for_test()
+    StateStore.reset_for_test()
   end
 end

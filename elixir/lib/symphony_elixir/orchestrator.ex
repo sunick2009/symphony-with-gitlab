@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -888,11 +889,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp active_state_set do
-    Config.settings!().tracker.active_states
+    settings = Config.settings!()
+
+    settings.tracker.active_states
+    |> Kernel.++(gitlab_controlled_active_states(settings.tracker.kind))
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
   end
+
+  defp gitlab_controlled_active_states("gitlab"),
+    do: ["soc::claimed", "soc::running", "soc::waiting-input"]
+
+  defp gitlab_controlled_active_states(_tracker_kind), do: []
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
@@ -1182,7 +1191,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_update_gitlab_run_lifecycle(issue_id, lifecycle_state)
        when is_binary(issue_id) and is_binary(lifecycle_state) do
     if Config.settings!().tracker.kind == "gitlab" do
-      case SymphonyElixir.GitLab.Adapter.update_issue_state_once(issue_id, lifecycle_state) do
+      case GitLabAdapter.update_issue_state_once(issue_id, lifecycle_state) do
         :ok ->
           :ok
 
@@ -1196,7 +1205,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_create_gitlab_run_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     if Config.settings!().tracker.kind == "gitlab" do
-      case SymphonyElixir.GitLab.Adapter.create_comment_once(issue_id, gitlab_lifecycle_comment_key(body), body) do
+      case GitLabAdapter.create_comment_once(issue_id, gitlab_lifecycle_comment_key(body), body) do
         :ok ->
           :ok
 

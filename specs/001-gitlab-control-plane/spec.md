@@ -127,6 +127,9 @@ An operator expects temporary GitLab API failures during label or comment writeb
 - **FR-020**: Symphony MUST retry GitLab API writeback operations with configurable maximum attempts and bounded exponential backoff.
 - **FR-021**: Symphony MUST record exhausted GitLab writeback failures in persistent state with operation type, issue IID, attempt count, status, and timestamp.
 - **FR-022**: Symphony MUST expose configuration for the persistent GitLab control-plane state path and use a deterministic safe default when not configured.
+- **FR-023**: Repository setup MUST track the Spec Kit assets required to reproduce this feature workflow while excluding local secrets, runtime state, staging evidence, generated noise, and unreviewed local environment experiments.
+- **FR-024**: Live staging validation MUST support a real local Codex app-server run and verify that GitLab API tokens and webhook secrets are absent from that runner process.
+- **FR-025**: GitLab reconciliation MUST keep an in-progress agent alive while its issue carries `soc::claimed`, `soc::running`, or `soc::waiting-input`, without broadening polling discovery beyond configured candidate labels.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -154,6 +157,8 @@ An operator expects temporary GitLab API failures during label or comment writeb
 - **SC-009**: A local automated test can restart after a lifecycle completion or failure writeback and prove duplicate lifecycle comments are not posted.
 - **SC-010**: A local automated test can simulate retryable GitLab writeback failures and observe bounded retry followed by either success or audited exhaustion.
 - **SC-011**: Stage 3 documentation explains persistent state placement, backup/retention expectations, token rotation, webhook endpoint deployment, failure recovery, and secret handling.
+- **SC-012**: A real local Codex app-server staging run reaches `soc::human-review`, and environment trace evidence shows that `GITLAB_API_TOKEN` and `GITLAB_WEBHOOK_SECRET` are absent from the Codex process.
+- **SC-013**: A lifecycle test spans at least one polling reconciliation cycle while the issue carries `soc::running` and still completes to `soc::human-review`.
 
 ## Assumptions
 

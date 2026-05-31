@@ -96,6 +96,27 @@ defmodule SymphonyElixir.GitLabTest do
     assert issue.state == "soc::failed"
   end
 
+  test "gitlab issue normalization preserves controlled running lifecycle state" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com",
+      tracker_api_token: "token",
+      tracker_project_slug: "group/project",
+      tracker_active_states: ["soc::queued"],
+      tracker_terminal_states: ["soc::failed", "soc::done"]
+    )
+
+    issue =
+      Client.normalize_issue_for_test(%{
+        "iid" => 42,
+        "title" => "Investigate alert",
+        "state" => "opened",
+        "labels" => ["soc::running"]
+      })
+
+    assert issue.state == "soc::running"
+  end
+
   test "gitlab label update sends add and remove labels through the adapter layer" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "gitlab",

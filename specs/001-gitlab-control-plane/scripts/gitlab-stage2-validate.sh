@@ -6,6 +6,7 @@ readonly EVIDENCE_DIR="${STAGE2_EVIDENCE_DIR:-${RUNTIME_DIR}/evidence}"
 readonly WORKFLOW_FILE="${STAGE2_WORKFLOW_FILE:-${RUNTIME_DIR}/WORKFLOW.stage2.md}"
 readonly AGENT_TRACE="${SYMPHONY_STAGE2_AGENT_TRACE:-${RUNTIME_DIR}/agent-env.trace}"
 readonly FAKE_CODEX="${RUNTIME_DIR}/fake-codex-stage2"
+readonly REAL_CODEX_WRAPPER="${RUNTIME_DIR}/real-codex-stage35"
 readonly DEFAULT_ENV_FILE="elixir/.env"
 
 readonly LABELS=(
@@ -26,7 +27,7 @@ Usage:
   gitlab-stage2-validate.sh ensure-labels
   gitlab-stage2-validate.sh list-webhooks
   gitlab-stage2-validate.sh ensure-webhook
-  gitlab-stage2-validate.sh write-workflow success|failure
+  gitlab-stage2-validate.sh write-workflow success|failure|real-success|real-failure
   gitlab-stage2-validate.sh create-success-issue
   gitlab-stage2-validate.sh post-run success|failure|duplicate
   gitlab-stage2-validate.sh verify-duplicate
@@ -54,6 +55,7 @@ Optional:
   STAGE2_EVIDENCE_DIR
   STAGE2_WORKFLOW_FILE
   SYMPHONY_STAGE2_AGENT_TRACE
+  STAGE35_CODEX_BIN
 EOF
 }
 
@@ -330,8 +332,9 @@ ensure_webhook() {
 
 write_workflow() {
   local mode="${1:-}"
-  if [ "$mode" != "success" ] && [ "$mode" != "failure" ]; then
-    echo "write-workflow requires success or failure" >&2
+  if [ "$mode" != "success" ] && [ "$mode" != "failure" ] &&
+    [ "$mode" != "real-success" ] && [ "$mode" != "real-failure" ]; then
+    echo "write-workflow requires success, failure, real-success, or real-failure" >&2
     exit 1
   fi
 
@@ -343,6 +346,8 @@ write_workflow() {
   endpoint_json="$(jq -Rn --arg value "$GITLAB_ENDPOINT" '$value')"
   project_slug_json="$(jq -Rn --arg value "$GITLAB_PROJECT_SLUG" '$value')"
   state_path_json="$(jq -Rn --arg value "${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}" '$value')"
+
+  local codex_command
 
   if [ "$mode" = "success" ]; then
     cat >"$FAKE_CODEX" <<'SH'
@@ -371,7 +376,8 @@ while IFS= read -r line; do
   esac
 done
 SH
-  else
+    codex_command="${FAKE_CODEX} app-server"
+  elif [ "$mode" = "failure" ]; then
     cat >"$FAKE_CODEX" <<'SH'
 #!/bin/sh
 trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}"
@@ -381,14 +387,44 @@ trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}
 } >> "$trace_file"
 exit 42
 SH
+    codex_command="${FAKE_CODEX} app-server"
+  else
+    local codex_bin
+    codex_bin="${STAGE35_CODEX_BIN:-$(command -v codex || true)}"
+
+    if [ -z "$codex_bin" ] || [ ! -x "$codex_bin" ]; then
+      echo "real Codex executable not found; set STAGE35_CODEX_BIN" >&2
+      exit 1
+    fi
+
+    cat >"$REAL_CODEX_WRAPPER" <<'SH'
+#!/bin/sh
+trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}"
+{
+  printf 'RUNNER=real-codex\n'
+  printf 'GITLAB_API_TOKEN=%s\n' "${GITLAB_API_TOKEN-unset}"
+  printf 'GITLAB_WEBHOOK_SECRET=%s\n' "${GITLAB_WEBHOOK_SECRET-unset}"
+} >> "$trace_file"
+exec "${STAGE35_CODEX_BIN:-codex}" "$@"
+SH
+    chmod 755 "$REAL_CODEX_WRAPPER"
+
+    if [ "$mode" = "real-success" ]; then
+      codex_command="${REAL_CODEX_WRAPPER} app-server"
+    else
+      codex_command="${REAL_CODEX_WRAPPER} --stage35-invalid-option app-server"
+    fi
   fi
 
-  chmod 755 "$FAKE_CODEX"
+  if [ -f "$FAKE_CODEX" ]; then
+    chmod 755 "$FAKE_CODEX"
+  fi
 
   cat >"$WORKFLOW_FILE" <<EOF
 ---
 codex:
-  command: ${FAKE_CODEX} app-server
+  command: ${codex_command}
+  approval_policy: never
 
 tracker:
   kind: gitlab
@@ -415,7 +451,8 @@ EOF
 
   printf 'WORKFLOW_FILE=%s\n' "$WORKFLOW_FILE"
   printf 'SYMPHONY_STAGE2_AGENT_TRACE=%s\n' "$AGENT_TRACE"
-  printf 'FAKE_CODEX_MODE=%s\n' "$mode"
+  printf '%s\n' "$mode" >"${EVIDENCE_DIR}/runner-mode.txt"
+  printf 'CODEX_RUNNER_MODE=%s\n' "$mode"
 }
 
 run_id() {
@@ -727,11 +764,11 @@ render_report() {
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh preflight\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-labels\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh ensure-webhook\n'
-    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow success\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow %s\n' "$(cat "${EVIDENCE_DIR}/runner-mode.txt" 2>/dev/null || printf 'success')"
     printf 'cd elixir\n'
     printf 'mix setup\n'
     printf 'mix build\n'
-    printf './bin/symphony /tmp/symphony-stage2/WORKFLOW.stage2.md --port 8080\n'
+    printf './bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails /tmp/symphony-stage2/WORKFLOW.stage2.md --port 8080\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-success-issue\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success\n'
@@ -740,7 +777,7 @@ render_report() {
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-duplicate\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh notes success\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary\n'
-    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure\n'
+    printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow failure-or-real-failure\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-failure-issue\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run failure\n'
     printf 'specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll failure\n'

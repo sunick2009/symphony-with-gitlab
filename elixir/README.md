@@ -274,6 +274,11 @@ Sample workflow:
    completion comment.
 7. Agent failure moves the issue to `soc::failed` and posts a failure comment.
 
+`tracker.active_states` controls GitLab polling discovery. Reconciliation also
+recognizes `soc::claimed`, `soc::running`, and `soc::waiting-input` as
+controlled in-progress lifecycle labels, so long-running agents are not
+stopped after leaving the queue.
+
 Known limitations:
 
 - Persistent idempotency is local to one Symphony deployment. Multi-replica
@@ -317,6 +322,11 @@ The Spec Kit quickstart for this phase is available at
 [`../specs/001-gitlab-control-plane/quickstart.md`](../specs/001-gitlab-control-plane/quickstart.md).
 Live validation against a disposable GitLab staging project is tracked in
 [`../specs/001-gitlab-control-plane/live-staging-validation.md`](../specs/001-gitlab-control-plane/live-staging-validation.md).
+That checklist includes a Stage 3.5 mode that executes a real authenticated
+local `codex app-server`, verifies that GitLab secrets are absent from the
+child process, and distinguishes deterministic CLI startup failure from a
+model-turn failure. The generated staging workflow explicitly sets
+`codex.approval_policy: never` for app-server version compatibility.
 
 ## Web dashboard
 

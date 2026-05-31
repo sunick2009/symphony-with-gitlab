@@ -25,6 +25,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.GitLab.Adapter,
           SymphonyElixir.GitLab.Client,
           SymphonyElixir.GitLab.Command,
+          SymphonyElixir.GitLab.StateStore,
           SymphonyElixir.GitLab.Webhook,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,

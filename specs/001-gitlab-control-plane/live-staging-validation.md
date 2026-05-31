@@ -1,14 +1,11 @@
 # Stage 2: Live GitLab Staging Validation
 
-**Status**: Not executed in this workspace yet.
+**Status**: Stage 3.5 real-runner validation completed on 2026-05-31.
 
-**Reason**: No staging GitLab environment variables were present when checked on 2026-05-30:
-
-```bash
-env | rg '^(GITLAB|SYMPHONY|MIX_ENV|PHX|PORT)=' | sed -E 's/=.*/=<set>/'
-```
-
-The command returned no matching variables. Do not mark Stage 2 complete until the live staging evidence sections below are filled with real staging issue URLs and command results.
+The evidence directory remains outside the repository at
+`/tmp/symphony-stage35/evidence`. It contains sanitized setup, issue, note,
+duplicate-command, replay-summary, token-boundary, and report files. Do not
+commit this staging evidence.
 
 ## Scope
 
@@ -168,6 +165,77 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh assert-complete
 
 The rendered report is written to `${STAGE2_EVIDENCE_DIR:-/tmp/symphony-stage2/evidence}/stage2-report.md` and includes sanitized environment status, exact commands, issue URLs, results, and remaining risks.
 The completion assertion reads the evidence directory and fails unless the staging project, labels, webhook, success path, duplicate check, failure path, and local token-boundary evidence all pass.
+
+## Stage 3.5 Real Codex Runner Sequence
+
+Stage 2 fake-runner modes remain useful for deterministic control-plane checks.
+Stage 3.5 additionally requires a real authenticated local Codex app-server
+success run:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow real-success
+```
+
+The generated workflow launches `/tmp/symphony-stage2/real-codex-stage35`,
+which records only whether the two GitLab secret variables are absent and then
+executes the local `codex app-server`. Set `STAGE35_CODEX_BIN` only when the
+desired Codex executable is not available on `PATH`.
+
+The generated staging workflow explicitly sets `codex.approval_policy: never`.
+This avoids depending on the Symphony default object-form policy, which is not
+accepted by every Codex app-server version. Start Symphony with the CLI risk
+acknowledgement flag:
+
+```bash
+./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  /tmp/symphony-stage2/WORKFLOW.stage2.md --port 8080
+```
+
+If the normal user Codex state directory is unhealthy, create a temporary
+`CODEX_HOME`, copy only `auth.json` into it with mode `0600`, and export that
+path before starting Symphony. Keep the temporary directory outside the
+repository and remove it after validation.
+
+For a deterministic startup-failure lifecycle check, restart Symphony after:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow real-failure
+```
+
+This mode invokes the real Codex executable with an invalid CLI option. It
+validates that runner startup failure reaches `soc::failed`; it does not claim
+to simulate a model-turn failure. Preserve the same `GITLAB_STATE_PATH` across
+the success-run restart and webhook replay check.
+
+### Stage 3.5 Result
+
+- Real runner: local `codex-cli 0.135.0` app-server with an isolated temporary
+  `CODEX_HOME`.
+- Success issue:
+  `https://gitlab.lab.114514.my.id/sunick2009/symphony-with-gitlab-poc/-/issues/14`
+- Failure issue:
+  `https://gitlab.lab.114514.my.id/sunick2009/symphony-with-gitlab-poc/-/issues/15`
+- Success labels: empty, `soc::running`, `soc::human-review`.
+- Failure labels: empty, `soc::running`, `soc::failed`.
+- Duplicate `/soc run`: rejected without a second completion comment.
+- Restart replay: original note delivery `238` was replayed after Symphony
+  restart as delivery `269`; the receiver returned `{"status":"duplicate"}`.
+- Token boundary: the real runner trace recorded `GITLAB_API_TOKEN=unset` and
+  `GITLAB_WEBHOOK_SECRET=unset`.
+
+Two local runner setup problems were identified before the successful run:
+
+1. The existing `/root/.codex` SQLite state was unhealthy, so validation used
+   a temporary external `CODEX_HOME` containing only `auth.json`.
+2. `codex-cli 0.135.0` rejected Symphony's default object-form approval policy,
+   so the generated staging workflow now sets `codex.approval_policy: never`.
+
+The real runner also exposed a control-plane refresh defect that fast fake
+runners did not reveal: `soc::running` normalized back to `opened` during a
+long turn. GitLab normalization and reconciliation now preserve controlled
+in-progress lifecycle labels, with regression coverage spanning a polling
+cycle.
 
 ## Preflight Commands
 

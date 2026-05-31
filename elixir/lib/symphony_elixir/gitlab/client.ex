@@ -11,6 +11,16 @@ defmodule SymphonyElixir.GitLab.Client do
 
   @per_page 100
   @max_error_body_log_bytes 1_000
+  @lifecycle_labels [
+    "soc::queued",
+    "soc::claimed",
+    "soc::running",
+    "soc::waiting-input",
+    "soc::human-review",
+    "soc::rework",
+    "soc::failed",
+    "soc::done"
+  ]
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -302,6 +312,9 @@ defmodule SymphonyElixir.GitLab.Client do
 
       active = configured_label_match_from_list(normalized_labels, active_states) ->
         active
+
+      lifecycle = configured_label_match_from_list(normalized_labels, @lifecycle_labels) ->
+        lifecycle
 
       true ->
         issue_state

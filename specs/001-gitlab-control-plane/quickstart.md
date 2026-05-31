@@ -44,6 +44,10 @@ tracker:
 
 For disposable local testing, `state_path` may be omitted. For longer-running
 staging or production, set it to durable storage outside workspace cleanup.
+`active_states` controls polling discovery. During GitLab reconciliation,
+Symphony also recognizes `soc::claimed`, `soc::running`, and
+`soc::waiting-input` as controlled in-progress lifecycle labels so a long turn
+is not stopped merely because it has left the queue.
 
 ## 4. Start Symphony with HTTP Enabled
 
@@ -105,3 +109,23 @@ For disposable-project live validation, use
 required project labels, token scope, webhook settings, environment variables,
 success path, duplicate `/soc run` check, failure path, token-boundary check,
 and evidence table.
+
+## Stage 3.5 Real Codex Runner Validation
+
+The helper can generate a workflow that executes a real authenticated local
+Codex app-server while preserving the GitLab credential boundary:
+
+```bash
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh write-workflow real-success
+```
+
+The wrapper records only whether `GITLAB_API_TOKEN` and
+`GITLAB_WEBHOOK_SECRET` are absent from the child process. It does not record
+their values. Use `write-workflow real-failure` only to validate deterministic
+startup-failure mapping; it invokes the real Codex executable with an invalid
+CLI option and is not a model-turn failure simulation.
+
+The generated workflow sets `codex.approval_policy: never` for app-server
+version compatibility. Start Symphony with its required risk acknowledgement
+flag. If the default Codex state directory is unhealthy, use a temporary
+external `CODEX_HOME` containing only a mode-`0600` copy of `auth.json`.
