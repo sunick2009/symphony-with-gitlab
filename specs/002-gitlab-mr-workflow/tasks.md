@@ -18,8 +18,8 @@
 
 **Purpose**: Establish Stage 4 documentation and validation baseline before implementation.
 
-- [ ] T001 Record the chosen Stage 4 repository mutation strategy and security rationale in `specs/002-gitlab-mr-workflow/research.md`
-- [ ] T002 Extend Stage 4 planning notes for required GitLab APIs, staging boundaries, and CI reconciliation in `specs/002-gitlab-mr-workflow/plan.md`
+- [x] T001 Record the chosen Stage 4 repository mutation strategy and security rationale in `specs/002-gitlab-mr-workflow/research.md`
+- [x] T002 Extend Stage 4 planning notes for required GitLab APIs, staging boundaries, and CI reconciliation in `specs/002-gitlab-mr-workflow/plan.md`
 - [ ] T003 Add Stage 4 overview and staging-only warning to `elixir/README.md`
 
 ---
@@ -28,11 +28,11 @@
 
 **Purpose**: Add the shared adapter and persistence primitives required by all user stories.
 
-- [ ] T004 Define Stage 4 repository mutation state structures in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
-- [ ] T005 [P] Extend GitLab client request helpers for branch, commit, merge request, and MR pipeline APIs in `elixir/lib/symphony_elixir/gitlab/client.ex`
-- [ ] T006 [P] Add adapter-owned Stage 4 mutation entrypoints in `elixir/lib/symphony_elixir/gitlab/adapter.ex`
-- [ ] T007 Add a dedicated Stage 4 workflow coordinator in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-- [ ] T008 Add foundational fake-client coverage for Stage 4 API operations in `elixir/test/symphony_elixir/gitlab_test.exs`
+- [x] T004 Define Stage 4 repository mutation state structures in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
+- [x] T005 [P] Extend GitLab client request helpers for branch, commit, merge request, and MR pipeline APIs in `elixir/lib/symphony_elixir/gitlab/client.ex`
+- [x] T006 [P] Add adapter-owned Stage 4 mutation entrypoints in `elixir/lib/symphony_elixir/gitlab/adapter.ex`
+- [x] T007 Add a dedicated Stage 4 workflow coordinator in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T008 Add foundational fake-client coverage for Stage 4 API operations in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 
 **Checkpoint**: Shared Stage 4 mutation and persistence primitives exist without changing orchestrator behavior yet.
 
@@ -47,16 +47,19 @@
 ### Tests for User Story 1
 
 - [ ] T009 [P] [US1] Add Stage 4 branch naming and artifact collection tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-- [ ] T010 [P] [US1] Add successful branch, commit, MR creation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-- [ ] T011 [US1] Add orchestrator completion coverage for Stage 4 handoff in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
+- [x] T009 [P] [US1] Add Stage 4 branch naming and artifact collection tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+- [x] T010 [P] [US1] Add successful branch, commit, MR creation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+- [x] T011 [US1] Add orchestrator completion coverage for Stage 4 handoff in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 1
 
-- [ ] T012 [P] [US1] Implement adapter-owned artifact manifest collection in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-- [ ] T013 [P] [US1] Implement deterministic branch naming and provenance checks in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-- [ ] T014 [US1] Implement Branches API and Commits API repository mutation flow in `elixir/lib/symphony_elixir/gitlab/client.ex`
+- [x] T012 [P] [US1] Implement adapter-owned artifact manifest collection in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T013 [P] [US1] Implement deterministic branch naming and provenance checks in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T014 [US1] Implement Branches API and Commits API repository mutation flow in `elixir/lib/symphony_elixir/gitlab/client.ex`
 - [ ] T015 [US1] Implement merge request creation and issue-link writeback in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+  Note: issue-link writeback helper and dry-run MR finalization planner exist; live completion-driven MR mutation remains incomplete.
 - [ ] T016 [US1] Trigger Stage 4 MR finalization from normal GitLab run completion in `elixir/lib/symphony_elixir/orchestrator.ex`
+  Note: dry-run finalization handoff is complete; live MR mutation remains intentionally disabled in this phase.
 
 **Checkpoint**: Stage 4 can create a reviewable merge request and move the issue to `soc::human-review`.
 
@@ -72,13 +75,16 @@
 
 - [ ] T017 [P] [US2] Add MR pipeline status normalization tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [ ] T018 [P] [US2] Add CI success and failure reconciliation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+  Note: CI failure writeback helper coverage exists; full reconciliation coverage remains incomplete.
 - [ ] T019 [US2] Add lifecycle coverage for Stage 4 CI writeback in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 2
 
 - [ ] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
+- [x] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
 - [ ] T021 [US2] Implement Stage 4 CI observation persistence and status-class dedupe in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
 - [ ] T022 [US2] Implement CI success and failure issue writeback flow in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+  Note: CI failure writeback helper exists; success flow and reconciliation integration remain incomplete.
 - [ ] T023 [US2] Integrate CI reconciliation scheduling into `elixir/lib/symphony_elixir/orchestrator.ex`
 
 **Checkpoint**: Stage 4 reflects CI status to the originating issue without duplicate comments.
@@ -93,13 +99,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T024 [P] [US3] Add branch reuse and duplicate MR suppression tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+- [x] T024 [P] [US3] Add branch reuse and duplicate MR suppression tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [ ] T025 [P] [US3] Add restart-safe repository mutation resume tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+  Note: same-digest dry-run idempotency and changed-digest conflict coverage exist; restart-safe live mutation resume remains incomplete.
 - [ ] T026 [US3] Add partial writeback recovery coverage in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 3
 
-- [ ] T027 [P] [US3] Extend persistent writeback keys for Stage 4 branch, commit, MR, and CI operations in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
+- [x] T027 [P] [US3] Extend persistent writeback keys for Stage 4 branch, commit, MR, and CI operations in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
 - [ ] T028 [US3] Implement repository mutation lookup and provenance validation in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [ ] T029 [US3] Implement resume-from-first-incomplete-step logic in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [ ] T030 [US3] Extend adapter retry and exhausted-failure audit behavior for Stage 4 writeback in `elixir/lib/symphony_elixir/gitlab/client.ex`
@@ -117,6 +124,7 @@
 ### Tests for User Story 4
 
 - [ ] T031 [P] [US4] Add token-boundary regression coverage for Stage 4 completion paths in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
+  Note: foundational Stage 4 token-boundary coverage exists in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`; completion-path coverage remains incomplete.
 
 ### Implementation for User Story 4
 
