@@ -110,6 +110,251 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert MRWorkflow.branch_name("Issue 42", "AB_cd.123") == "soc/issue-issue-42/ab-cd-123"
   end
 
+  test "dry-run finalization plans valid artifacts without live gitlab mutation" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/generated_stage4.ex",
+          "workspace_source_path" => "out/generated_stage4.ex",
+          "action" => "create",
+          "description" => "generated file",
+          "content_type" => "text/plain"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/generated_stage4.ex", "defmodule GeneratedStage4 do\nend\n")
+
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert plan.issue_iid == "42"
+    assert plan.source_branch =~ "soc/issue-42/"
+    assert plan.target_branch == "main"
+    assert plan.no_op == false
+    assert plan.would_create_branch == true
+    assert plan.would_create_commit == true
+    assert plan.would_create_merge_request == true
+    assert plan.manifest_digest
+    assert plan.collected_artifact_digest
+    assert plan.action_digest
+    assert length(plan.commit_actions) == 1
+    assert hd(plan.commit_actions).file_path == "elixir/lib/generated_stage4.ex"
+
+    refute_receive {:gitlab_branch_created, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_merge_request_created, _, _, _}
+
+    state = StateStore.read_for_test()
+    assert state["issue_runs"]["42"]["stage4"]["stage4_status"] == "dry-run-planned"
+    assert state["issue_runs"]["42"]["stage4"]["manifest_digest"] == plan.manifest_digest
+    assert state["issue_runs"]["42"]["stage4"]["action_digest"] == plan.action_digest
+  end
+
+  test "dry-run finalization records no-op when the manifest is missing" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:noop, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert plan.no_op == true
+    assert plan.manifest_digest == nil
+    assert plan.action_digest == nil
+
+    state = StateStore.read_for_test()
+    assert state["issue_runs"]["42"]["stage4"]["stage4_status"] == "no-op"
+  end
+
+  test "dry-run finalization rejects invalid json manifests" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    write_workspace_file!(workspace, MRWorkflow.manifest_relpath(), "{invalid json")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:invalid_artifact_manifest_json, _reason}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects invalid manifest shape" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    write_manifest!(workspace, %{"version" => 1, "artifacts" => [%{"action" => "create"}]})
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:invalid_artifact_entry, 0, :missing_repository_path}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects absolute repository paths" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "/tmp/evil.txt",
+          "workspace_source_path" => "out/evil.txt",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/evil.txt", "evil")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:repository_path, :absolute_path_rejected, "/tmp/evil.txt"}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects path traversal" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/ok.txt",
+          "workspace_source_path" => "../escape.txt",
+          "action" => "create"
+        }
+      ]
+    })
+
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:workspace_source_path, :path_traversal_rejected, "../escape.txt"}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects .git paths" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => ".git/config",
+          "workspace_source_path" => "out/config",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/config", "evil")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:blocked_path_segment, ".git/config"}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects disallowed repository output paths" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "tmp/generated.txt",
+          "workspace_source_path" => "out/generated.txt",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/generated.txt", "tmp")
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:disallowed_repo_path, "tmp/generated.txt"}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+  end
+
+  test "dry-run finalization rejects oversized files" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    oversized_content = String.duplicate("a", 32)
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/large.txt",
+          "workspace_source_path" => "out/large.txt",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/large.txt", oversized_content)
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:error, {:artifact_too_large, "out/large.txt", 32, 16}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, max_artifact_bytes: 16)
+  end
+
+  test "dry-run finalization computes deterministic manifest and action digests" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    manifest = %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/generated_stage4.ex",
+          "workspace_source_path" => "out/generated_stage4.ex",
+          "action" => "create"
+        }
+      ]
+    }
+
+    write_manifest!(workspace, manifest)
+    write_workspace_file!(workspace, "out/generated_stage4.ex", "defmodule GeneratedStage4 do\nend\n")
+
+    assert {:ok, {:planned, first_plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert {:ok, {:planned, second_plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert first_plan.manifest_digest == second_plan.manifest_digest
+    assert first_plan.action_digest == second_plan.action_digest
+  end
+
+  test "dry-run finalization is idempotent with the same digest and reports conflicts for changed digests" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => "elixir/lib/generated_stage4.ex",
+          "workspace_source_path" => "out/generated_stage4.ex",
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, "out/generated_stage4.ex", "defmodule GeneratedStage4 do\nend\n")
+
+    assert {:ok, {:planned, first_plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert {:ok, {:planned, second_plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert first_plan.action_digest == second_plan.action_digest
+
+    write_workspace_file!(workspace, "out/generated_stage4.ex", "defmodule GeneratedStage4 do\n  @x 1\nend\n")
+
+    assert {:error, {:dry_run_conflict, "42", conflict}} =
+             MRWorkflow.finalize_dry_run(issue, workspace, [])
+
+    assert conflict[:previous_action_digest] == first_plan.action_digest
+    refute conflict[:next_action_digest] == first_plan.action_digest
+  end
+
   test "gitlab client creates branches through the branches API" do
     configure_request_test()
 
@@ -453,5 +698,28 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
   defp remote_put(path, value) do
     pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
     Agent.update(pid, &Kernel.put_in(&1, path, value))
+  end
+
+  defp create_workspace_fixture! do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-stage4-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+    workspace
+  end
+
+  defp write_manifest!(workspace, manifest) do
+    write_workspace_file!(workspace, MRWorkflow.manifest_relpath(), Jason.encode!(manifest))
+  end
+
+  defp write_workspace_file!(workspace, relpath, contents) do
+    path = Path.join(workspace, relpath)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, contents)
+    path
   end
 end

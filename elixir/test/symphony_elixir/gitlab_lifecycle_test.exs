@@ -43,6 +43,45 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
       :ok
     end
 
+    @spec fetch_branch(String.t()) :: {:ok, map() | nil}
+    def fetch_branch(branch_name) when is_binary(branch_name) do
+      send(test_recipient(), {:gitlab_live_branch_fetch, branch_name})
+      {:ok, nil}
+    end
+
+    @spec create_branch(String.t(), String.t()) :: {:ok, map()}
+    def create_branch(branch_name, ref) when is_binary(branch_name) and is_binary(ref) do
+      send(test_recipient(), {:gitlab_live_branch_create, branch_name, ref})
+      {:ok, %{"branch_name" => branch_name}}
+    end
+
+    @spec create_commit(String.t(), String.t(), [map()], keyword()) :: {:ok, map()}
+    def create_commit(branch_name, message, actions, _opts)
+        when is_binary(branch_name) and is_binary(message) and is_list(actions) do
+      send(test_recipient(), {:gitlab_live_commit_create, branch_name, message, actions})
+      {:ok, %{"commit_sha" => "dry-run-should-not-happen"}}
+    end
+
+    @spec fetch_open_merge_request(String.t(), String.t() | nil) :: {:ok, map() | nil}
+    def fetch_open_merge_request(source_branch, target_branch)
+        when is_binary(source_branch) and (is_binary(target_branch) or is_nil(target_branch)) do
+      send(test_recipient(), {:gitlab_live_mr_fetch, source_branch, target_branch})
+      {:ok, nil}
+    end
+
+    @spec create_merge_request(String.t(), String.t(), String.t(), String.t() | nil) :: {:ok, map()}
+    def create_merge_request(source_branch, target_branch, title, description)
+        when is_binary(source_branch) and is_binary(target_branch) and is_binary(title) do
+      send(test_recipient(), {:gitlab_live_mr_create, source_branch, target_branch, title, description})
+      {:ok, %{"merge_request_iid" => "dry-run-should-not-happen"}}
+    end
+
+    @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]}
+    def fetch_merge_request_pipelines(merge_request_iid) when is_binary(merge_request_iid) do
+      send(test_recipient(), {:gitlab_live_pipeline_fetch, merge_request_iid})
+      {:ok, []}
+    end
+
     defp current_issue do
       state = Application.get_env(:symphony_elixir, :gitlab_lifecycle_issue_state, "soc::queued")
 
@@ -65,6 +104,51 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
   defmodule SuccessfulRunner do
     @spec run(map(), pid() | nil, keyword()) :: :ok
     def run(issue, recipient, _opts) do
+      send(test_recipient(), {:agent_run, issue.id, recipient})
+      Process.sleep(25)
+      :ok
+    end
+
+    defp test_recipient do
+      Application.fetch_env!(:symphony_elixir, :gitlab_test_recipient)
+    end
+  end
+
+  defmodule DryRunSuccessfulRunner do
+    @spec run(map(), pid() | nil, keyword()) :: :ok
+    def run(issue, recipient, _opts) when is_pid(recipient) do
+      workspace_root = Config.settings!().workspace.root
+      workspace = Path.join(workspace_root, "_42")
+      manifest_path = Path.join(workspace, ".symphony/gitlab_artifacts.json")
+      output_path = Path.join(workspace, "out/generated_from_hook.ex")
+
+      File.mkdir_p!(Path.dirname(manifest_path))
+      File.mkdir_p!(Path.dirname(output_path))
+
+      File.write!(
+        manifest_path,
+        Jason.encode!(%{
+          "version" => 1,
+          "artifacts" => [
+            %{
+              "repository_path" => "elixir/lib/generated_from_hook.ex",
+              "workspace_source_path" => "out/generated_from_hook.ex",
+              "action" => "create",
+              "content_type" => "text/plain"
+            }
+          ]
+        })
+      )
+
+      File.write!(
+        output_path,
+        """
+        defmodule GeneratedFromHook do
+        end
+        """
+      )
+
+      send(recipient, {:worker_runtime_info, issue.id, %{workspace_path: workspace, worker_host: nil}})
       send(test_recipient(), {:agent_run, issue.id, recipient})
       Process.sleep(25)
       :ok
@@ -121,7 +205,34 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     end
   end
 
-  defp configure_lifecycle_test(agent_runner_module) do
+  test "successful gitlab issue completion records a dry-run mr finalization plan without live mutation" do
+    configure_lifecycle_test(DryRunSuccessfulRunner)
+
+    {:ok, pid} = Orchestrator.start_link(name: :"gitlab-lifecycle-dryrun-#{System.unique_integer([:positive])}")
+
+    try do
+      assert_receive {:gitlab_labels, "42", ["soc::running"], _removed}, 1_000
+      assert_receive {:agent_run, "42", recipient} when is_pid(recipient)
+      assert_receive {:gitlab_labels, "42", ["soc::human-review"], _removed}, 1_000
+
+      state = StateStore.read_for_test()
+      stage4 = state["issue_runs"]["42"]["stage4"]
+      assert stage4["stage4_status"] == "dry-run-planned"
+      assert is_binary(stage4["manifest_digest"])
+      assert is_binary(stage4["action_digest"])
+      assert stage4["branch_name"] =~ "soc/issue-42/"
+
+      refute_receive {:gitlab_live_branch_fetch, _branch_name}
+      refute_receive {:gitlab_live_branch_create, _, _}
+      refute_receive {:gitlab_live_commit_create, _, _, _}
+      refute_receive {:gitlab_live_mr_fetch, _, _}
+      refute_receive {:gitlab_live_mr_create, _, _, _, _}
+    after
+      GenServer.stop(pid)
+    end
+  end
+
+  defp configure_lifecycle_test(agent_runner_module, opts \\ []) do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "gitlab",
       tracker_endpoint: "https://gitlab.example.com",
@@ -131,7 +242,8 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
       tracker_state_path: Path.join(System.tmp_dir!(), "symphony-gitlab-lifecycle-state-#{System.unique_integer([:positive])}.json"),
       tracker_active_states: ["soc::queued"],
       tracker_terminal_states: ["soc::done", "soc::failed"],
-      poll_interval_ms: 10
+      poll_interval_ms: 10,
+      hook_after_run: Keyword.get(opts, :hook_after_run)
     )
 
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
