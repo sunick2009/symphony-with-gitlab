@@ -90,6 +90,130 @@ defmodule SymphonyElixir.GitLab.Client do
     end
   end
 
+  @spec fetch_branch(String.t()) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_branch(branch_name) when is_binary(branch_name) do
+    case request(:get, "/repository/branches/#{encode_path_segment(branch_name)}", []) do
+      {:ok, %{status: 200, body: body}} when is_map(body) ->
+        {:ok, normalize_branch(body)}
+
+      {:ok, %{status: 404}} ->
+        {:ok, nil}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec create_branch(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def create_branch(branch_name, ref) when is_binary(branch_name) and is_binary(ref) do
+    writeback_request(:post, "/repository/branches", json: %{"branch" => branch_name, "ref" => ref})
+    |> case do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        {:ok, normalize_branch(body)}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec create_commit(String.t(), String.t(), [map()], keyword()) :: {:ok, map()} | {:error, term()}
+  def create_commit(branch_name, message, actions, opts \\ [])
+      when is_binary(branch_name) and is_binary(message) and is_list(actions) do
+    payload =
+      %{
+        "branch" => branch_name,
+        "commit_message" => message,
+        "actions" => Enum.map(actions, &normalize_commit_action/1)
+      }
+      |> maybe_put_string("start_branch", Keyword.get(opts, :start_branch))
+      |> maybe_put_string("start_sha", Keyword.get(opts, :start_sha))
+      |> maybe_put_string("author_email", Keyword.get(opts, :author_email))
+      |> maybe_put_string("author_name", Keyword.get(opts, :author_name))
+
+    writeback_request(:post, "/repository/commits", json: payload)
+    |> case do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        {:ok, normalize_commit(body)}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec fetch_open_merge_request(String.t(), String.t() | nil) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_open_merge_request(source_branch, target_branch \\ nil)
+      when is_binary(source_branch) and (is_binary(target_branch) or is_nil(target_branch)) do
+    params =
+      %{
+        "state" => "opened",
+        "source_branch" => source_branch,
+        "per_page" => 1
+      }
+      |> maybe_put_string("target_branch", target_branch)
+
+    case request(:get, "/merge_requests", params: params) do
+      {:ok, %{status: 200, body: [merge_request | _]}} when is_map(merge_request) ->
+        {:ok, normalize_merge_request(merge_request)}
+
+      {:ok, %{status: 200, body: []}} ->
+        {:ok, nil}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec create_merge_request(String.t(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def create_merge_request(source_branch, target_branch, title, description \\ nil)
+      when is_binary(source_branch) and is_binary(target_branch) and is_binary(title) do
+    payload =
+      %{
+        "source_branch" => source_branch,
+        "target_branch" => target_branch,
+        "title" => title
+      }
+      |> maybe_put_string("description", description)
+
+    writeback_request(:post, "/merge_requests", json: payload)
+    |> case do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        {:ok, normalize_merge_request(body)}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_merge_request_pipelines(merge_request_iid) when is_binary(merge_request_iid) do
+    case request(:get, "/merge_requests/#{encode_path_segment(merge_request_iid)}/pipelines", []) do
+      {:ok, %{status: 200, body: pipelines}} when is_list(pipelines) ->
+        {:ok, Enum.map(pipelines, &normalize_pipeline/1)}
+
+      {:ok, %{status: status, body: response_body}} ->
+        api_status_error(status, response_body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @doc false
   @spec normalize_issue_for_test(map()) :: Issue.t() | nil
   def normalize_issue_for_test(payload) when is_map(payload), do: normalize_issue(payload)
@@ -107,6 +231,67 @@ defmodule SymphonyElixir.GitLab.Client do
       when is_function(request_fun, 3) do
     with_temporary_request_fun(request_fun, fn ->
       update_issue_labels(issue_iid, add_labels, remove_labels)
+    end)
+  end
+
+  @doc false
+  @spec fetch_branch_for_test(String.t(), request_fun()) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_branch_for_test(branch_name, request_fun)
+      when is_binary(branch_name) and is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      fetch_branch(branch_name)
+    end)
+  end
+
+  @doc false
+  @spec create_branch_for_test(String.t(), String.t(), request_fun()) :: {:ok, map()} | {:error, term()}
+  def create_branch_for_test(branch_name, ref, request_fun)
+      when is_binary(branch_name) and is_binary(ref) and is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      create_branch(branch_name, ref)
+    end)
+  end
+
+  @doc false
+  @spec create_commit_for_test(String.t(), String.t(), [map()], keyword(), request_fun()) ::
+          {:ok, map()} | {:error, term()}
+  def create_commit_for_test(branch_name, message, actions, opts, request_fun)
+      when is_binary(branch_name) and is_binary(message) and is_list(actions) and is_list(opts) and
+             is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      create_commit(branch_name, message, actions, opts)
+    end)
+  end
+
+  @doc false
+  @spec fetch_open_merge_request_for_test(String.t(), String.t() | nil, request_fun()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def fetch_open_merge_request_for_test(source_branch, target_branch, request_fun)
+      when is_binary(source_branch) and (is_binary(target_branch) or is_nil(target_branch)) and
+             is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      fetch_open_merge_request(source_branch, target_branch)
+    end)
+  end
+
+  @doc false
+  @spec create_merge_request_for_test(String.t(), String.t(), String.t(), String.t() | nil, request_fun()) ::
+          {:ok, map()} | {:error, term()}
+  def create_merge_request_for_test(source_branch, target_branch, title, description, request_fun)
+      when is_binary(source_branch) and is_binary(target_branch) and is_binary(title) and
+             (is_binary(description) or is_nil(description)) and is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      create_merge_request(source_branch, target_branch, title, description)
+    end)
+  end
+
+  @doc false
+  @spec fetch_merge_request_pipelines_for_test(String.t(), request_fun()) ::
+          {:ok, [map()]} | {:error, term()}
+  def fetch_merge_request_pipelines_for_test(merge_request_iid, request_fun)
+      when is_binary(merge_request_iid) and is_function(request_fun, 3) do
+    with_temporary_request_fun(request_fun, fn ->
+      fetch_merge_request_pipelines(merge_request_iid)
     end)
   end
 
@@ -230,6 +415,19 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp normalize_query_params(params), do: params
 
+  defp maybe_put_string(payload, _key, nil), do: payload
+  defp maybe_put_string(payload, _key, ""), do: payload
+  defp maybe_put_string(payload, key, value) when is_binary(value), do: Map.put(payload, key, value)
+  defp maybe_put_string(payload, _key, _value), do: payload
+
+  defp normalize_commit_action(action) when is_map(action) do
+    action
+    |> Enum.into(%{}, fn {key, value} -> {to_string(key), value} end)
+    |> Map.take(["action", "file_path", "previous_path", "content", "encoding", "execute_filemode", "last_commit_id"])
+  end
+
+  defp normalize_commit_action(action), do: action
+
   defp with_temporary_request_fun(request_fun, fun) do
     previous = Application.get_env(:symphony_elixir, :gitlab_request_fun)
     Application.put_env(:symphony_elixir, :gitlab_request_fun, request_fun)
@@ -299,6 +497,56 @@ defmodule SymphonyElixir.GitLab.Client do
   end
 
   defp normalize_issue(_payload), do: nil
+
+  defp normalize_branch(%{} = payload) do
+    %{
+      "branch_name" => payload["name"],
+      "name" => payload["name"],
+      "merged" => payload["merged"],
+      "protected" => payload["protected"],
+      "default" => payload["default"],
+      "web_url" => payload["web_url"],
+      "commit_id" => get_in(payload, ["commit", "id"])
+    }
+  end
+
+  defp normalize_commit(%{} = payload) do
+    %{
+      "commit_sha" => payload["id"],
+      "id" => payload["id"],
+      "short_id" => payload["short_id"],
+      "title" => payload["title"],
+      "message" => payload["message"],
+      "web_url" => payload["web_url"]
+    }
+  end
+
+  defp normalize_merge_request(%{} = payload) do
+    %{
+      "merge_request_iid" => normalize_issue_iid(payload["iid"]),
+      "merge_request_url" => payload["web_url"],
+      "iid" => normalize_issue_iid(payload["iid"]),
+      "id" => payload["id"],
+      "title" => payload["title"],
+      "description" => payload["description"],
+      "web_url" => payload["web_url"],
+      "state" => payload["state"],
+      "source_branch" => payload["source_branch"],
+      "target_branch" => payload["target_branch"],
+      "sha" => payload["sha"]
+    }
+  end
+
+  defp normalize_pipeline(%{} = payload) do
+    %{
+      "id" => payload["id"],
+      "sha" => payload["sha"],
+      "ref" => payload["ref"],
+      "status" => payload["status"],
+      "web_url" => payload["web_url"],
+      "updated_at" => payload["updated_at"]
+    }
+  end
 
   defp derive_state(labels, issue_state, active_states, terminal_states) do
     normalized_labels = normalized_label_list(labels)
