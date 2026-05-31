@@ -13,7 +13,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
   @max_artifact_bytes 262_144
   @default_target_branch "main"
   @allowed_repo_prefixes ["elixir/", "specs/", ".specify/", ".agents/"]
-  @allowed_repo_exact ["README.md", "AGENTS.md"]
+  @allowed_repo_exact ["README.md", "AGENTS.md", ".gitlab-ci.yml"]
   @blocked_path_segments [".git", ".codex"]
   @blocked_path_suffixes [
     ".env",

@@ -140,7 +140,7 @@
 - [x] T037 Run relevant full Elixir validation in `elixir/`
 - [x] T038 Run `mix specs.check`, `mix format --check-formatted`, and `git diff --check`
 - [x] T039 Run clean-room search checks against `elixir/lib`, `elixir/test`, `elixir/README.md`, and `specs/002-gitlab-mr-workflow`
-- [ ] T040 Run Stage 4 disposable staging validation and record sanitized results in `specs/002-gitlab-mr-workflow/quickstart.md`
+- [x] T040 Run Stage 4 disposable staging validation and record sanitized results in `specs/002-gitlab-mr-workflow/quickstart.md`
 
 ## Dependencies & Execution Order
 

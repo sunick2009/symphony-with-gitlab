@@ -27,7 +27,7 @@ Usage:
   gitlab-stage2-validate.sh ensure-labels
   gitlab-stage2-validate.sh list-webhooks
   gitlab-stage2-validate.sh ensure-webhook
-  gitlab-stage2-validate.sh write-workflow success|failure|real-success|real-failure|stage4-live
+  gitlab-stage2-validate.sh write-workflow success|failure|real-success|real-failure|stage4-live|stage4-live-success|stage4-live-failure
   gitlab-stage2-validate.sh create-success-issue
   gitlab-stage2-validate.sh create-stage4-issue
   gitlab-stage2-validate.sh post-run success|failure|duplicate
@@ -35,8 +35,8 @@ Usage:
   gitlab-stage2-validate.sh poll success|failure
   gitlab-stage2-validate.sh notes success|failure
   gitlab-stage2-validate.sh token-boundary
-  gitlab-stage2-validate.sh verify-stage4-live
-  gitlab-stage2-validate.sh verify-stage4-ci
+  gitlab-stage2-validate.sh verify-stage4-live [success|failure]
+  gitlab-stage2-validate.sh verify-stage4-ci [success|failure]
   gitlab-stage2-validate.sh evidence-summary
   gitlab-stage2-validate.sh render-report
   gitlab-stage2-validate.sh assert-complete
@@ -337,8 +337,9 @@ write_workflow() {
   local mode="${1:-}"
   if [ "$mode" != "success" ] && [ "$mode" != "failure" ] &&
     [ "$mode" != "real-success" ] && [ "$mode" != "real-failure" ] &&
-    [ "$mode" != "stage4-live" ]; then
-    echo "write-workflow requires success, failure, real-success, real-failure, or stage4-live" >&2
+    [ "$mode" != "stage4-live" ] && [ "$mode" != "stage4-live-success" ] &&
+    [ "$mode" != "stage4-live-failure" ]; then
+    echo "write-workflow requires success, failure, real-success, real-failure, stage4-live, stage4-live-success, or stage4-live-failure" >&2
     exit 1
   fi
 
@@ -354,9 +355,11 @@ write_workflow() {
   local codex_command
   local stage4_live_mutation="false"
   local stage4_allowed_project_slugs="[]"
+  local agent_block=""
   local hook_after_run_block=""
 
-  if [ "$mode" = "success" ] || [ "$mode" = "stage4-live" ]; then
+  if [ "$mode" = "success" ] || [ "$mode" = "stage4-live" ] ||
+    [ "$mode" = "stage4-live-success" ] || [ "$mode" = "stage4-live-failure" ]; then
     cat >"$FAKE_CODEX" <<'SH'
 #!/bin/sh
 trace_file="${SYMPHONY_STAGE2_AGENT_TRACE:-/tmp/symphony-stage2/agent-env.trace}"
@@ -385,20 +388,65 @@ done
 SH
     codex_command="${FAKE_CODEX} app-server"
 
-    if [ "$mode" = "stage4-live" ]; then
+    if [ "$mode" = "stage4-live" ] || [ "$mode" = "stage4-live-success" ]; then
       stage4_live_mutation="true"
       stage4_allowed_project_slugs="[${project_slug_json}]"
+      agent_block="$(cat <<'EOF'
+agent:
+  max_turns: 1
+EOF
+)"
       hook_after_run_block="$(cat <<'EOF'
 hooks:
   after_run: |
     mkdir -p .symphony out
     cat > .symphony/gitlab_artifacts.json <<'JSON'
-    {"version":1,"artifacts":[{"repository_path":"elixir/lib/stage4_live_validation.ex","workspace_source_path":"out/stage4_live_validation.ex","action":"create","content_type":"text/plain","description":"stage4 live validation artifact"}]}
+    {"version":1,"artifacts":[{"repository_path":"elixir/lib/stage4_live_validation.ex","workspace_source_path":"out/stage4_live_validation.ex","action":"create","content_type":"text/plain","description":"stage4 live validation artifact"},{"repository_path":".gitlab-ci.yml","workspace_source_path":"out/.gitlab-ci.yml","action":"create","content_type":"application/x-yaml","description":"stage4 live validation ci pipeline"}]}
     JSON
     cat > out/stage4_live_validation.ex <<'EOF_ELIXIR'
     defmodule Stage4LiveValidation do
     end
     EOF_ELIXIR
+    cat > out/.gitlab-ci.yml <<'EOF_GITLAB_CI'
+    stages:
+      - validate
+
+    stage4_live_validation:
+      stage: validate
+      script:
+        - echo stage4 live validation pipeline success
+    EOF_GITLAB_CI
+EOF
+)"
+    elif [ "$mode" = "stage4-live-failure" ]; then
+      stage4_live_mutation="true"
+      stage4_allowed_project_slugs="[${project_slug_json}]"
+      agent_block="$(cat <<'EOF'
+agent:
+  max_turns: 1
+EOF
+)"
+      hook_after_run_block="$(cat <<'EOF'
+hooks:
+  after_run: |
+    mkdir -p .symphony out
+    cat > .symphony/gitlab_artifacts.json <<'JSON'
+    {"version":1,"artifacts":[{"repository_path":"elixir/lib/stage4_live_validation.ex","workspace_source_path":"out/stage4_live_validation.ex","action":"create","content_type":"text/plain","description":"stage4 live validation artifact"},{"repository_path":".gitlab-ci.yml","workspace_source_path":"out/.gitlab-ci.yml","action":"create","content_type":"application/x-yaml","description":"stage4 live validation ci pipeline"}]}
+    JSON
+    cat > out/stage4_live_validation.ex <<'EOF_ELIXIR'
+    defmodule Stage4LiveValidation do
+    end
+    EOF_ELIXIR
+    cat > out/.gitlab-ci.yml <<'EOF_GITLAB_CI'
+    stages:
+      - validate
+
+    stage4_live_validation:
+      stage: validate
+      script:
+        - echo stage4 live validation pipeline failure
+        - exit 1
+    EOF_GITLAB_CI
 EOF
 )"
     fi
@@ -450,6 +498,7 @@ SH
 codex:
   command: ${codex_command}
   approval_policy: never
+${agent_block}
 ${hook_after_run_block}
 
 tracker:
@@ -672,10 +721,11 @@ verify_stage4_live() {
   require_tools
   init_dirs
 
+  local kind="${1:-success}"
   local iid state_file notes_file branch_name commit_sha mr_url encoded_branch encoded_commit note_count
-  iid="$(issue_iid success)"
+  iid="$(issue_iid "$kind")"
   state_file="${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}"
-  notes_file="${EVIDENCE_DIR}/success-notes.json"
+  notes_file="${EVIDENCE_DIR}/${kind}-notes.json"
 
   if [ ! -f "$state_file" ]; then
     echo "missing Stage 4 state file: ${state_file}" >&2
@@ -731,9 +781,9 @@ verify_stage4_live() {
       merge_request_count: 1,
       mr_link_comment_count: 1,
       token_boundary_result: $token_boundary_result
-    }' >"${EVIDENCE_DIR}/stage4-live-validation.json"
+    }' >"${EVIDENCE_DIR}/stage4-live-${kind}-validation.json"
 
-  cat "${EVIDENCE_DIR}/stage4-live-validation.json"
+  cat "${EVIDENCE_DIR}/stage4-live-${kind}-validation.json"
 }
 
 verify_stage4_ci() {
@@ -741,10 +791,11 @@ verify_stage4_ci() {
   require_tools
   init_dirs
 
+  local kind="${1:-success}"
   local iid state_file pipeline_status pipeline_id status_class notes_file ci_comment_count
-  iid="$(issue_iid success)"
+  iid="$(issue_iid "$kind")"
   state_file="${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}"
-  notes_file="${EVIDENCE_DIR}/success-notes.json"
+  notes_file="${EVIDENCE_DIR}/${kind}-notes.json"
 
   if [ ! -f "$state_file" ]; then
     echo "missing Stage 4 state file: ${state_file}" >&2
@@ -761,9 +812,9 @@ verify_stage4_ci() {
       --arg result "Pending" \
       --arg reason "no pipeline observation recorded for the current disposable MR" \
       '{issue_iid: $issue_iid, result: $result, reason: $reason}' \
-      >"${EVIDENCE_DIR}/stage4-ci-validation.json"
+      >"${EVIDENCE_DIR}/stage4-ci-${kind}-validation.json"
 
-    cat "${EVIDENCE_DIR}/stage4-ci-validation.json"
+    cat "${EVIDENCE_DIR}/stage4-ci-${kind}-validation.json"
     return 0
   fi
 
@@ -777,9 +828,9 @@ verify_stage4_ci() {
     --arg status_class "$status_class" \
     --argjson ci_comment_count "$ci_comment_count" \
     '{issue_iid: $issue_iid, pipeline_status: $pipeline_status, pipeline_id: $pipeline_id, status_class: $status_class, ci_comment_count: $ci_comment_count}' \
-    >"${EVIDENCE_DIR}/stage4-ci-validation.json"
+    >"${EVIDENCE_DIR}/stage4-ci-${kind}-validation.json"
 
-  cat "${EVIDENCE_DIR}/stage4-ci-validation.json"
+  cat "${EVIDENCE_DIR}/stage4-ci-${kind}-validation.json"
 }
 
 evidence_summary() {
@@ -1058,8 +1109,8 @@ main() {
     poll) poll_issue "${1:-}" ;;
     notes) fetch_notes "${1:-}" ;;
     token-boundary) token_boundary ;;
-    verify-stage4-live) verify_stage4_live ;;
-    verify-stage4-ci) verify_stage4_ci ;;
+    verify-stage4-live) verify_stage4_live "${1:-success}" ;;
+    verify-stage4-ci) verify_stage4_ci "${1:-success}" ;;
     evidence-summary) evidence_summary ;;
     render-report) render_report ;;
     assert-complete) assert_complete ;;

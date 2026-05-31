@@ -74,6 +74,12 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-stage4-c
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 ```
 
+For a disposable CI-success run, use `write-workflow stage4-live-success`.
+For a disposable CI-failure run, use `write-workflow stage4-live-failure`.
+These helper workflows pin `agent.max_turns: 1` so the fake local Codex
+runner does not trigger an artificial continuation-turn failure during staging
+validation.
+
 4. Verify:
    - one deterministic source branch is created
    - one commit is created through the adapter path
@@ -131,11 +137,19 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 - Stage 4.2 live MR creation succeeded on 2026-05-31 using staging issue `#19`,
   source branch `soc/issue-19/fdabb4c741ea`, commit `eee92b65`, and merge
   request `!1`.
-- Stage 4.3 live CI reconciliation was attempted against the same disposable MR.
-  The GitLab pipelines API returned an empty list, MR `!1` remained open, issue
-  `#19` remained labeled `soc::human-review`, and no CI status note was present.
-- The current disposable staging project therefore validates the no-pipeline
-  observation limit, not a success or failure pipeline writeback.
+- Stage 4.3.1 disposable CI-success validation succeeded on 2026-05-31 using
+  issue `#23`, merge request `!2`, source branch
+  `soc/issue-23/1ac473b8b3cd`, pipeline `#44`, and one CI success note for
+  pipeline `44`. The issue remained in `soc::human-review`, the MR remained
+  open, and repeated reconciliation left the CI success note count at `1`.
+- Stage 4.3.1 disposable CI-failure validation succeeded on 2026-05-31 using
+  issue `#24`, merge request `!3`, source branch
+  `soc/issue-24/eddfd104b71d`, pipeline `#45`, and one CI failure note for
+  pipeline `45`. The issue remained in `soc::human-review`, the MR remained
+  open, and repeated reconciliation left the CI failure note count at `1`.
+- Sanitized token-boundary evidence remained `Pass` throughout the success and
+  failure runs. The local agent trace continued to show
+  `GITLAB_API_TOKEN=unset` and `GITLAB_WEBHOOK_SECRET=unset`.
 
 ## Rollback and Cleanup
 

@@ -304,6 +304,34 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
              MRWorkflow.finalize_dry_run(issue, workspace, [])
   end
 
+  test "dry-run finalization allows a staging gitlab ci artifact at the repository root" do
+    configure_mr_workflow_test()
+    workspace = create_workspace_fixture!()
+
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => ".gitlab-ci.yml",
+          "workspace_source_path" => "out/.gitlab-ci.yml",
+          "action" => "create",
+          "content_type" => "application/x-yaml"
+        }
+      ]
+    })
+
+    write_workspace_file!(
+      workspace,
+      "out/.gitlab-ci.yml",
+      "stages:\n  - validate\nvalidate:\n  stage: validate\n  script:\n    - echo ok\n"
+    )
+
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    assert Enum.any?(plan.commit_actions, &(&1.file_path == ".gitlab-ci.yml"))
+  end
+
   test "dry-run finalization rejects oversized files" do
     configure_mr_workflow_test()
     workspace = create_workspace_fixture!()

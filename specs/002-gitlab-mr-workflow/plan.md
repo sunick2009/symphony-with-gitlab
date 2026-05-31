@@ -134,3 +134,12 @@ See [data-model.md](data-model.md), [contracts/gitlab-stage4-lifecycle.md](contr
   therefore prove repository mutation, MR-link writeback, duplicate
   suppression, and token-boundary preservation, but only the no-pipeline CI
   observation path until a pipeline exists.
+- **Stage 4.3.1 disposable CI validation** succeeded on 2026-05-31 after
+  adding a staging-only `.gitlab-ci.yml` artifact through the existing
+  adapter-owned MR workflow. The success sample used issue `#23`, MR `!2`,
+  branch `soc/issue-23/1ac473b8b3cd`, pipeline `#44`, and exactly one CI
+  success comment. The failure sample used issue `#24`, MR `!3`, branch
+  `soc/issue-24/eddfd104b71d`, pipeline `#45`, and exactly one CI failure
+  comment. In both cases the issue remained `soc::human-review`, the MR
+  remained open, duplicate reconciliation preserved a single CI comment, and
+  the local token boundary remained intact.
