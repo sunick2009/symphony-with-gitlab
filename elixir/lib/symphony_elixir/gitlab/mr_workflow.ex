@@ -258,8 +258,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
              plan.commit_message,
              plan.commit_actions,
              manifest_digest: plan.manifest_digest,
-             action_digest: plan.action_digest,
-             start_branch: plan.target_branch
+             action_digest: plan.action_digest
            ),
          :ok <-
            Adapter.create_merge_request_once(

@@ -23,7 +23,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     end
 
     @spec create_commit(String.t(), String.t(), [map()], keyword()) :: {:ok, map()}
-    def create_commit(branch_name, message, actions, _opts)
+    def create_commit(branch_name, message, actions, opts)
         when is_binary(branch_name) and is_binary(message) and is_list(actions) do
       commit_sha = "sha-#{System.unique_integer([:positive])}"
 
@@ -35,7 +35,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
       }
 
       put_in_remote_state([:commits, branch_name], commit)
-      send(test_recipient(), {:gitlab_commit_created, branch_name, message, actions})
+      send(test_recipient(), {:gitlab_commit_created, branch_name, message, actions, opts})
       {:ok, commit}
     end
 
@@ -146,7 +146,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert hd(plan.commit_actions).file_path == "elixir/lib/generated_stage4.ex"
 
     refute_receive {:gitlab_branch_created, _, _}
-    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _, _}
     refute_receive {:gitlab_merge_request_created, _, _, _}
 
     state = StateStore.read_for_test()
@@ -177,7 +177,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert plan.no_op == false
 
     refute_receive {:gitlab_branch_created, _, _}
-    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _, _}
     refute_receive {:gitlab_merge_request_created, _, _, _}
   end
 
@@ -559,7 +559,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
                []
              )
 
-    assert_receive {:gitlab_commit_created, "soc/issue-42/run-commit", "feat: update file", ^actions}
+    assert_receive {:gitlab_commit_created, "soc/issue-42/run-commit", "feat: update file", ^actions, []}
 
     assert :ok =
              Adapter.create_commit_once(
@@ -571,7 +571,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
                []
              )
 
-    refute_receive {:gitlab_commit_created, "soc/issue-42/run-commit", "feat: update file", ^actions}
+    refute_receive {:gitlab_commit_created, "soc/issue-42/run-commit", "feat: update file", ^actions, []}
 
     state = StateStore.read_for_test()
     assert state["writebacks"]["issue:42:commit:run-commit"]["status"] == "done"
@@ -639,7 +639,8 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
 
     assert_receive {:gitlab_branch_created, branch_name, "main"}
     assert branch_name == plan.source_branch
-    assert_receive {:gitlab_commit_created, ^branch_name, _, _}
+    assert_receive {:gitlab_commit_created, ^branch_name, _, _, opts}
+    refute Keyword.has_key?(opts, :start_branch)
     assert_receive {:gitlab_merge_request_created, ^branch_name, "main", _title}
     assert_receive {:gitlab_comment, "42", body}
     assert body =~ "merge request"
@@ -675,7 +676,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
              MRWorkflow.finalize_issue_completion(issue, workspace, [])
 
     refute_receive {:gitlab_branch_created, _, _}
-    refute_receive {:gitlab_commit_created, _, _, _}
+    refute_receive {:gitlab_commit_created, _, _, _, _}
     refute_receive {:gitlab_merge_request_created, _, _, _}
   end
 
@@ -724,7 +725,8 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
              MRWorkflow.finalize_issue_completion(issue, workspace, [])
 
     refute_receive {:gitlab_branch_created, ^source_branch, "main"}
-    assert_receive {:gitlab_commit_created, ^source_branch, _, _}
+    assert_receive {:gitlab_commit_created, ^source_branch, _, _, opts}
+    refute Keyword.has_key?(opts, :start_branch)
     refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
     assert_receive {:gitlab_comment, "42", body}
     assert body =~ "/merge_requests/88"
@@ -756,15 +758,16 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert {:ok, {:executed, first_plan, _snapshot}} =
              MRWorkflow.finalize_issue_completion(issue, workspace, [])
 
-    assert_receive {:gitlab_commit_created, branch_name, _, _}
+    assert_receive {:gitlab_commit_created, branch_name, _, _, opts}
     assert branch_name == first_plan.source_branch
+    refute Keyword.has_key?(opts, :start_branch)
 
     write_workspace_file!(workspace, "out/live_conflict.ex", "defmodule LiveConflict do\n  @x 1\nend\n")
 
     assert {:error, {:dry_run_conflict, "42", _conflict}} =
              MRWorkflow.finalize_issue_completion(issue, workspace, [])
 
-    refute_receive {:gitlab_commit_created, ^branch_name, _, _}
+    refute_receive {:gitlab_commit_created, ^branch_name, _, _, _}
   end
 
   test "mr link and ci failure writeback remain adapter-owned and idempotent" do
