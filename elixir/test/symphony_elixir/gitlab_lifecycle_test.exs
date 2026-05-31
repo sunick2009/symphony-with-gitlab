@@ -16,7 +16,16 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     end
 
     @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
-    def fetch_issues_by_states(_states), do: {:ok, []}
+    def fetch_issues_by_states(states) when is_list(states) do
+      issue = current_issue()
+      requested = Enum.map(states, &String.downcase/1)
+
+      if String.downcase(issue.state) in requested do
+        {:ok, [issue]}
+      else
+        {:ok, []}
+      end
+    end
 
     @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_issue_states_by_ids(issue_ids) do
@@ -84,7 +93,12 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]}
     def fetch_merge_request_pipelines(merge_request_iid) when is_binary(merge_request_iid) do
       send(test_recipient(), {:gitlab_live_pipeline_fetch, merge_request_iid})
-      {:ok, []}
+
+      pipelines =
+        Application.get_env(:symphony_elixir, :gitlab_lifecycle_pipelines, %{})
+        |> Map.get(merge_request_iid, [])
+
+      {:ok, pipelines}
     end
 
     defp current_issue do
@@ -295,6 +309,50 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     end
   end
 
+  test "human-review gitlab issue reconciles ci success without leaving human review" do
+    configure_lifecycle_test(SuccessfulRunner)
+
+    Application.put_env(:symphony_elixir, :gitlab_lifecycle_issue_state, "soc::human-review")
+
+    Application.put_env(:symphony_elixir, :gitlab_lifecycle_pipelines, %{
+      "11" => [
+        %{
+          "id" => 900,
+          "status" => "success",
+          "ref" => "soc/issue-42/run-ci",
+          "updated_at" => "2026-05-31T12:10:00Z"
+        }
+      ]
+    })
+
+    :ok =
+      StateStore.record_issue_run_snapshot("42", %{
+        run_fingerprint: "run-ci",
+        source_branch: "soc/issue-42/run-ci",
+        branch_name: "soc/issue-42/run-ci",
+        merge_request_iid: "11",
+        merge_request_url: "https://gitlab.example.com/group/project/-/merge_requests/11",
+        target_branch: "main",
+        stage4_status: "live-mr-created"
+      })
+
+    {:ok, pid} = Orchestrator.start_link(name: :"gitlab-lifecycle-ci-#{System.unique_integer([:positive])}")
+
+    try do
+      assert_receive {:gitlab_live_pipeline_fetch, "11"}, 1_000
+      assert_receive {:gitlab_comment, "42", body}, 1_000
+      assert body =~ "CI status `success`"
+      refute_receive {:gitlab_labels, "42", ["soc::failed"], _removed}, 300
+
+      stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
+      assert stage4["pipeline_status"] == "success"
+      assert stage4["status_class"] == "ci-success"
+      assert stage4["last_writeback_status_class"] == "ci-success"
+    after
+      GenServer.stop(pid)
+    end
+  end
+
   defp configure_lifecycle_test(agent_runner_module, opts \\ []) do
     write_workflow_file!(
       Workflow.workflow_file_path(),
@@ -319,6 +377,7 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     Application.put_env(:symphony_elixir, :agent_runner_module, agent_runner_module)
     Application.put_env(:symphony_elixir, :gitlab_test_recipient, self())
     Application.put_env(:symphony_elixir, :gitlab_lifecycle_issue_state, "soc::queued")
+    Application.put_env(:symphony_elixir, :gitlab_lifecycle_pipelines, %{})
     StateStore.reset_for_test()
   end
 end

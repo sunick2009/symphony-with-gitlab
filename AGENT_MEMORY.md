@@ -50,6 +50,11 @@ GitLab issue or comment
 - Local real Codex app-server validation.
 - Local Codex agent processes do not receive `GITLAB_API_TOKEN` or
   `GITLAB_WEBHOOK_SECRET`.
+- Stage 4.2 live staging MR creation with adapter-owned branch, commit, merge
+  request, MR-link writeback, and duplicate suppression.
+- Stage 4.3 CI reconciliation MVP with newest-pipeline selection, normalized CI
+  status classes, state persistence, idempotent issue writeback, and human
+  review preservation.
 
 ## Important Implementation Boundaries
 
@@ -75,8 +80,9 @@ GitLab issue or comment
   runner.
 - The live failure path currently proves runner startup failure mapping more
   directly than full model-turn failure behavior.
-- Branch creation, commit automation, push, merge request creation, and CI
-  workflow handling are not implemented yet.
+- Stage 4 remains staging-validated only. CI reconciliation is polling-based
+  and the current disposable project does not expose a real MR pipeline, so
+  live validation currently proves only the no-pipeline path.
 - Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
   isolation, automatic blocking, and other production-impacting actions are
   not implemented.
@@ -104,13 +110,14 @@ for staging-validated behavior and limitations.
 
 ## Next Recommended Stage
 
-Stage 4 should define and stage-validate the branch, commit, merge request, and
-CI workflow. Start with a Spec Kit specification update before implementation.
+Stage 4.4 should harden restart-safe reconciliation and broaden live staging
+coverage once the disposable GitLab project has an actual CI pipeline to
+observe.
 
-Stage 4 must preserve adapter-owned GitLab mutation. Codex may generate patch
-or artifact content, but adapter-controlled code should perform branch
-creation, commit, push, and merge request creation. Credential-bearing GitLab
-operations must not move into the Codex agent process.
+Stage 4 must continue to preserve adapter-owned GitLab mutation. Codex may
+generate patch or artifact content, but adapter-controlled code must keep
+branch, commit, merge request, and CI writeback operations outside the Codex
+agent process.
 
 ## Explicit Non-Goals Until Stage 4 Is Complete
 
@@ -124,15 +131,11 @@ operations must not move into the Codex agent process.
 
 ## Recommended Stage 4 Preflight Questions
 
-1. What GitLab token scopes are required for branch and merge request
-   operations?
-2. Can branch and merge request creation remain entirely adapter-controlled
-   without exposing write tokens to Codex?
-3. How should CI failures update issue labels, issue comments, and merge
-   request state?
-4. How should duplicate branch and merge request creation be suppressed across
-   retries and process restarts?
-5. Which patch, artifact, commit-message, and metadata outputs may Codex
-   generate?
-6. What rollback or recovery behavior is required if branch creation, commit,
-   push, or merge request creation fails partway through?
+1. How should Stage 4.4 harden restart-safe reconciliation when remote GitLab
+   mutation succeeds but local state persistence races or fails?
+2. Should CI reconciliation remain polling-based, or is a webhook-assisted path
+   required before broader staging rollout?
+3. What additional staging CI fixtures are required to exercise success,
+   failure, canceled, and skipped pipelines end to end?
+4. When should issue lifecycle movement beyond `soc::human-review` be specified
+   for post-review stages, if at all?

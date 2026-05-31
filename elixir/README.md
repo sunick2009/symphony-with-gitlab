@@ -295,6 +295,17 @@ Stage 4 live staging MR behavior:
 - Expected MR title: `Issue #<iid>: <issue title>`
 - MR description includes the issue identifier plus the manifest and action
   digests for provenance
+- CI reconciliation fetches the newest relevant MR pipeline for the stored
+  source branch and normalizes statuses into `ci-pending`, `ci-running`,
+  `ci-success`, `ci-failure`, or `ci-unknown`
+- Supported normalized pipeline statuses include `pending`, `running`,
+  `success`, `failed`, `canceled`, `skipped`, and `unknown`
+- CI issue writeback uses idempotent per-pipeline status-class comments, so
+  repeated reconciliation does not duplicate the same CI result comment
+- Example CI issue writeback:
+  `Symphony observed CI status \`success\` for merge request <mr-url> on pipeline \`123\`.`
+- CI success and CI failure both leave the issue in `soc::human-review`
+- Auto-merge remains out of scope
 - Rollback or cleanup in staging is manual: close the disposable MR, delete the
   disposable branch, and remove the local Stage 4 state file only while
   Symphony is stopped
@@ -314,6 +325,10 @@ Known limitations:
 - GitLab project issue IID is used as the tracker issue ID for this phase.
 - `/soc status`, `/soc retry`, and `/soc cancel` are parsed but return
   not-implemented responses.
+- CI reconciliation is polling-based and only considers the newest relevant MR
+  pipeline visible through the GitLab API for the stored source branch.
+- If the disposable staging project has no CI configuration, Stage 4.3 can only
+  validate the no-pipeline path until a pipeline exists.
 - Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
   isolation, and automatic blocking are future phases.
 

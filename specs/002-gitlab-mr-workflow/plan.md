@@ -120,3 +120,17 @@ See [data-model.md](data-model.md), [contracts/gitlab-stage4-lifecycle.md](contr
 
 6. **Staging validation boundary**  
    Stage 4 live validation must run only against a disposable staging project with explicit operator acknowledgement and must never target production GitLab projects.
+
+## Sanitized Staging Evidence
+
+- **Stage 4.2 live MR creation** was validated on 2026-05-31 against the
+  disposable staging project using issue `#19`, source branch
+  `soc/issue-19/fdabb4c741ea`, commit `eee92b65`, and merge request `!1`.
+- Duplicate `/soc run` on the same issue did not create a second branch,
+  commit, merge request, or MR link comment. The adapter instead wrote one
+  explanatory comment that the issue was already in a Symphony lifecycle state.
+- **Stage 4.3 CI reconciliation** remains staging-limited by the current
+  disposable project's lack of CI configuration. The live validation path can
+  therefore prove repository mutation, MR-link writeback, duplicate
+  suppression, and token-boundary preservation, but only the no-pipeline CI
+  observation path until a pipeline exists.

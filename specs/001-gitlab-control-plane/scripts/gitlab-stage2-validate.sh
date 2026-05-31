@@ -36,6 +36,7 @@ Usage:
   gitlab-stage2-validate.sh notes success|failure
   gitlab-stage2-validate.sh token-boundary
   gitlab-stage2-validate.sh verify-stage4-live
+  gitlab-stage2-validate.sh verify-stage4-ci
   gitlab-stage2-validate.sh evidence-summary
   gitlab-stage2-validate.sh render-report
   gitlab-stage2-validate.sh assert-complete
@@ -735,6 +736,52 @@ verify_stage4_live() {
   cat "${EVIDENCE_DIR}/stage4-live-validation.json"
 }
 
+verify_stage4_ci() {
+  require_base_env
+  require_tools
+  init_dirs
+
+  local iid state_file pipeline_status pipeline_id status_class notes_file ci_comment_count
+  iid="$(issue_iid success)"
+  state_file="${GITLAB_STATE_PATH:-${RUNTIME_DIR}/gitlab-control-plane-state.json}"
+  notes_file="${EVIDENCE_DIR}/success-notes.json"
+
+  if [ ! -f "$state_file" ]; then
+    echo "missing Stage 4 state file: ${state_file}" >&2
+    exit 1
+  fi
+
+  pipeline_status="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.pipeline_status // empty' "$state_file")"
+  pipeline_id="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.pipeline_id // empty' "$state_file")"
+  status_class="$(jq -r --arg iid "$iid" '.issue_runs[$iid].stage4.status_class // empty' "$state_file")"
+
+  if [ -z "$pipeline_status" ] || [ -z "$pipeline_id" ] || [ -z "$status_class" ]; then
+    jq -n \
+      --arg issue_iid "$iid" \
+      --arg result "Pending" \
+      --arg reason "no pipeline observation recorded for the current disposable MR" \
+      '{issue_iid: $issue_iid, result: $result, reason: $reason}' \
+      >"${EVIDENCE_DIR}/stage4-ci-validation.json"
+
+    cat "${EVIDENCE_DIR}/stage4-ci-validation.json"
+    return 0
+  fi
+
+  curl_json GET "/issues/${iid}/notes" >"$notes_file"
+  ci_comment_count="$(jq --arg status "$pipeline_status" --arg pipeline_id "$pipeline_id" '[.[] | select(.body | contains("CI status `" + $status + "`")) | select(.body | contains("pipeline `" + $pipeline_id + "`"))] | length' "$notes_file")"
+
+  jq -n \
+    --arg issue_iid "$iid" \
+    --arg pipeline_status "$pipeline_status" \
+    --arg pipeline_id "$pipeline_id" \
+    --arg status_class "$status_class" \
+    --argjson ci_comment_count "$ci_comment_count" \
+    '{issue_iid: $issue_iid, pipeline_status: $pipeline_status, pipeline_id: $pipeline_id, status_class: $status_class, ci_comment_count: $ci_comment_count}' \
+    >"${EVIDENCE_DIR}/stage4-ci-validation.json"
+
+  cat "${EVIDENCE_DIR}/stage4-ci-validation.json"
+}
+
 evidence_summary() {
   init_dirs
   printf 'EVIDENCE_DIR=%s\n' "$EVIDENCE_DIR"
@@ -1012,6 +1059,7 @@ main() {
     notes) fetch_notes "${1:-}" ;;
     token-boundary) token_boundary ;;
     verify-stage4-live) verify_stage4_live ;;
+    verify-stage4-ci) verify_stage4_ci ;;
     evidence-summary) evidence_summary ;;
     render-report) render_report ;;
     assert-complete) assert_complete ;;

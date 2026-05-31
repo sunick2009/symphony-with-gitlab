@@ -50,6 +50,11 @@ defmodule SymphonyElixir.GitLab.StateStore do
     call({:record_issue_run_snapshot, state_path(), issue_iid, attrs})
   end
 
+  @spec record_ci_observation(String.t(), map()) :: :ok | {:error, term()}
+  def record_ci_observation(issue_iid, attrs) when is_binary(issue_iid) and is_map(attrs) do
+    call({:record_issue_run_snapshot, state_path(), issue_iid, attrs})
+  end
+
   @spec fetch_issue_run_snapshot(String.t()) :: {:ok, map() | nil} | {:error, term()}
   def fetch_issue_run_snapshot(issue_iid) when is_binary(issue_iid) do
     state_path()
@@ -237,8 +242,11 @@ defmodule SymphonyElixir.GitLab.StateStore do
           "title",
           "merge_request_iid",
           "merge_request_url",
+          "pipeline_id",
           "pipeline_status",
-          "status_class"
+          "status_class",
+          "ci_observed_at",
+          "last_writeback_status_class"
         ])
         |> Map.merge(%{
           "status" => "processing",
@@ -279,8 +287,11 @@ defmodule SymphonyElixir.GitLab.StateStore do
           "title",
           "merge_request_iid",
           "merge_request_url",
+          "pipeline_id",
           "pipeline_status",
-          "status_class"
+          "status_class",
+          "ci_observed_at",
+          "last_writeback_status_class"
         ])
         |> Map.merge(existing)
         |> Map.merge(updates)
@@ -327,8 +338,11 @@ defmodule SymphonyElixir.GitLab.StateStore do
       |> maybe_put_snapshot_field("target_branch", writeback["target_branch"])
       |> maybe_put_snapshot_field("merge_request_iid", writeback["merge_request_iid"])
       |> maybe_put_snapshot_field("merge_request_url", writeback["merge_request_url"])
+      |> maybe_put_snapshot_field("pipeline_id", writeback["pipeline_id"])
       |> maybe_put_snapshot_field("pipeline_status", writeback["pipeline_status"])
       |> maybe_put_snapshot_field("status_class", writeback["status_class"])
+      |> maybe_put_snapshot_field("ci_observed_at", writeback["ci_observed_at"])
+      |> maybe_put_snapshot_field("last_writeback_status_class", writeback["last_writeback_status_class"])
       |> merge_result_metadata(Map.get(writeback, "result_metadata"))
 
     put_issue_run_snapshot(stored, issue_iid, snapshot_attrs)

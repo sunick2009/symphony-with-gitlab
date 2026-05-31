@@ -70,6 +70,7 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh create-stage4-i
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh post-run success
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh poll success
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-stage4-live
+specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh verify-stage4-ci
 specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 ```
 
@@ -82,8 +83,27 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
    - pending or running
    - success
    - failure or canceled
+   - skipped or unknown, if returned by GitLab
 7. Re-run the same completion path or restart Symphony and verify duplicate suppression.
 8. Record token-boundary evidence that `GITLAB_API_TOKEN` and `GITLAB_WEBHOOK_SECRET` remain absent from the Codex process.
+
+## CI Reconciliation Behavior
+
+- Symphony fetches pipelines using the stored MR IID.
+- It filters to the stored source branch when GitLab returns a branch ref.
+- It selects the newest relevant pipeline deterministically using `updated_at`
+  and pipeline ID.
+- Normalized status classes are:
+  - `ci-pending`
+  - `ci-running`
+  - `ci-success`
+  - `ci-failure`
+  - `ci-unknown`
+- CI success and failure both leave the MR open and the issue in
+  `soc::human-review`.
+- Example CI issue writeback:
+  `Symphony observed CI status \`success\` for merge request <mr-url> on pipeline \`123\`.`
+- Auto-merge is out of scope.
 
 ## Expected Validation Evidence
 
@@ -95,9 +115,27 @@ specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh token-boundary
 - Expected MR title: `Issue #<iid>: <issue title>`
 - Expected MR description content: issue identifier, manifest digest, and action digest
 - Latest observed pipeline ID and status
+- Latest observed CI status class
 - Issue note excerpts for MR link and CI result
 - Sanitized token-boundary trace
 - Evidence that retries did not create duplicate branches or merge requests
+
+## Known Limitations
+
+- CI reconciliation is polling-based rather than webhook-driven.
+- If the disposable staging project has no CI configuration, the live
+  validation path can only prove the no-pipeline reconciliation case.
+
+## Sanitized Staging Evidence
+
+- Stage 4.2 live MR creation succeeded on 2026-05-31 using staging issue `#19`,
+  source branch `soc/issue-19/fdabb4c741ea`, commit `eee92b65`, and merge
+  request `!1`.
+- Stage 4.3 live CI reconciliation was attempted against the same disposable MR.
+  The GitLab pipelines API returned an empty list, MR `!1` remained open, issue
+  `#19` remained labeled `soc::human-review`, and no CI status note was present.
+- The current disposable staging project therefore validates the no-pipeline
+  observation limit, not a success or failure pipeline writeback.
 
 ## Rollback and Cleanup
 

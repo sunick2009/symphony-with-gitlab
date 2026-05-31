@@ -41,6 +41,11 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
     "application/x-yaml",
     "text/yaml"
   ]
+  @ci_pending_statuses MapSet.new(["pending", "created", "preparing", "scheduled", "waiting_for_resource"])
+  @ci_running_statuses MapSet.new(["running"])
+  @ci_success_statuses MapSet.new(["success"])
+  @ci_failure_statuses MapSet.new(["failed", "canceled"])
+  @ci_unknown_statuses MapSet.new(["skipped", "manual", "unknown"])
 
   @type artifact_manifest :: %{
           version: pos_integer(),
@@ -159,6 +164,46 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
         status_class: "ci-failure"
       }
     )
+  end
+
+  @spec reconcile_merge_request_ci(Issue.t() | map() | String.t()) ::
+          {:ok, :no_merge_request | :no_pipeline | map()} | {:error, term()}
+  def reconcile_merge_request_ci(%Issue{id: issue_iid}) when is_binary(issue_iid) do
+    reconcile_merge_request_ci(issue_iid)
+  end
+
+  def reconcile_merge_request_ci(%{id: issue_iid}) when is_binary(issue_iid) do
+    reconcile_merge_request_ci(issue_iid)
+  end
+
+  def reconcile_merge_request_ci(issue_iid) when is_binary(issue_iid) do
+    with {:ok, stage4_snapshot} <- fetch_stage4_snapshot(issue_iid),
+         merge_request_iid when is_binary(merge_request_iid) <-
+           Map.get(stage4_snapshot, "merge_request_iid") || {:ok, :no_merge_request},
+         {:ok, pipelines} <- Adapter.fetch_merge_request_pipelines(merge_request_iid) do
+      case select_newest_relevant_pipeline(pipelines, stage4_snapshot) do
+        {:ok, :no_pipeline} ->
+          {:ok, :no_pipeline}
+
+        {:ok, selected_pipeline} ->
+          with {:ok, observation} <- build_ci_observation(issue_iid, stage4_snapshot, selected_pipeline),
+               observation_map = stringify_map(Map.from_struct(observation)),
+               :ok <- StateStore.record_ci_observation(issue_iid, observation_map),
+               :ok <- write_ci_status_comment(issue_iid, observation),
+               :ok <-
+                 StateStore.record_ci_observation(issue_iid, %{
+                   last_writeback_status_class: observation.status_class
+                 }) do
+            {:ok, observation_map}
+          end
+      end
+    else
+      {:ok, :no_merge_request} ->
+        {:ok, :no_merge_request}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp do_finalize_dry_run(%Issue{id: issue_iid} = issue, workspace_path, opts)
@@ -360,6 +405,129 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
     case StateStore.fetch_issue_run_snapshot(issue_iid) do
       {:ok, issue_run} -> {:ok, get_in(issue_run || %{}, ["stage4"]) || %{}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defmodule CiObservation do
+    @moduledoc false
+    @enforce_keys [
+      :issue_iid,
+      :run_fingerprint,
+      :merge_request_iid,
+      :merge_request_url,
+      :pipeline_id,
+      :pipeline_status,
+      :status_class,
+      :ci_observed_at
+    ]
+    defstruct [
+      :issue_iid,
+      :run_fingerprint,
+      :merge_request_iid,
+      :merge_request_url,
+      :pipeline_id,
+      :pipeline_status,
+      :status_class,
+      :ci_observed_at
+    ]
+  end
+
+  defp select_newest_relevant_pipeline([], _stage4_snapshot), do: {:ok, :no_pipeline}
+
+  defp select_newest_relevant_pipeline(pipelines, stage4_snapshot) when is_list(pipelines) and is_map(stage4_snapshot) do
+    source_branch = Map.get(stage4_snapshot, "source_branch")
+
+    pipelines
+    |> Enum.filter(fn pipeline ->
+      is_nil(source_branch) or source_branch == "" or pipeline["ref"] in [nil, "", source_branch]
+    end)
+    |> case do
+      [] ->
+        {:ok, :no_pipeline}
+
+      relevant_pipelines ->
+        selected =
+          Enum.max_by(relevant_pipelines, fn pipeline ->
+            {parse_pipeline_timestamp(pipeline["updated_at"]), pipeline["id"] || 0}
+          end)
+
+        {:ok, selected}
+    end
+  end
+
+  defp build_ci_observation(issue_iid, stage4_snapshot, pipeline)
+       when is_binary(issue_iid) and is_map(stage4_snapshot) and is_map(pipeline) do
+    merge_request_iid = Map.get(stage4_snapshot, "merge_request_iid")
+    merge_request_url = Map.get(stage4_snapshot, "merge_request_url")
+    run_fingerprint = Map.get(stage4_snapshot, "run_fingerprint")
+    pipeline_status = normalize_pipeline_status(Map.get(pipeline, "status"))
+
+    if is_binary(merge_request_iid) and is_binary(merge_request_url) and is_binary(run_fingerprint) do
+      {:ok,
+       %CiObservation{
+         issue_iid: issue_iid,
+         run_fingerprint: run_fingerprint,
+         merge_request_iid: merge_request_iid,
+         merge_request_url: merge_request_url,
+         pipeline_id: to_string(Map.get(pipeline, "id")),
+         pipeline_status: pipeline_status,
+         status_class: pipeline_status_class(pipeline_status),
+         ci_observed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+       }}
+    else
+      {:error, :missing_merge_request_snapshot}
+    end
+  end
+
+  defp write_ci_status_comment(issue_iid, %CiObservation{} = observation) when is_binary(issue_iid) do
+    body =
+      "Symphony observed CI status `#{observation.pipeline_status}` for merge request " <>
+        "#{observation.merge_request_url} on pipeline `#{observation.pipeline_id}`."
+
+    Adapter.create_comment_once(
+      issue_iid,
+      "mr:#{observation.merge_request_iid}:pipeline:#{observation.pipeline_id}:#{observation.status_class}",
+      body,
+      %{
+        run_fingerprint: observation.run_fingerprint,
+        merge_request_iid: observation.merge_request_iid,
+        merge_request_url: observation.merge_request_url,
+        pipeline_id: observation.pipeline_id,
+        pipeline_status: observation.pipeline_status,
+        status_class: observation.status_class,
+        ci_observed_at: observation.ci_observed_at,
+        last_writeback_status_class: observation.status_class
+      }
+    )
+  end
+
+  defp normalize_pipeline_status(status) when is_binary(status) do
+    normalized = String.downcase(String.trim(status))
+
+    cond do
+      MapSet.member?(@ci_pending_statuses, normalized) -> "pending"
+      MapSet.member?(@ci_running_statuses, normalized) -> "running"
+      MapSet.member?(@ci_success_statuses, normalized) -> "success"
+      MapSet.member?(@ci_failure_statuses, normalized) -> normalized
+      MapSet.member?(@ci_unknown_statuses, normalized) -> normalized
+      true -> "unknown"
+    end
+  end
+
+  defp normalize_pipeline_status(_status), do: "unknown"
+
+  defp pipeline_status_class(status) when status in ["pending"], do: "ci-pending"
+  defp pipeline_status_class(status) when status in ["running"], do: "ci-running"
+  defp pipeline_status_class(status) when status in ["success"], do: "ci-success"
+  defp pipeline_status_class(status) when status in ["failed", "canceled"], do: "ci-failure"
+  defp pipeline_status_class(_status), do: "ci-unknown"
+
+  defp parse_pipeline_timestamp(nil), do: 0
+
+  defp parse_pipeline_timestamp(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, parsed, _offset} -> DateTime.to_unix(parsed, :microsecond)
+      _ -> 0
     end
   end
 

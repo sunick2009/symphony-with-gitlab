@@ -253,6 +253,7 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+      |> reconcile_gitlab_ci_issues()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -299,6 +300,35 @@ defmodule SymphonyElixir.Orchestrator do
 
       false ->
         state
+    end
+  end
+
+  defp reconcile_gitlab_ci_issues(%State{} = state) do
+    if Config.settings!().tracker.kind == "gitlab" do
+      case Tracker.fetch_issues_by_states(["soc::human-review"]) do
+        {:ok, issues} ->
+          Enum.each(issues, fn
+            %Issue{id: issue_id} ->
+              case MRWorkflow.reconcile_merge_request_ci(issue_id) do
+                {:ok, _result} ->
+                  :ok
+
+                {:error, reason} ->
+                  Logger.warning("GitLab CI reconciliation failed for issue_id=#{issue_id}: #{inspect(reason)}")
+              end
+
+            _ ->
+              :ok
+          end)
+
+          state
+
+        {:error, reason} ->
+          Logger.warning("Skipping GitLab CI reconciliation; failed to fetch human-review issues: #{inspect(reason)}")
+          state
+      end
+    else
+      state
     end
   end
 

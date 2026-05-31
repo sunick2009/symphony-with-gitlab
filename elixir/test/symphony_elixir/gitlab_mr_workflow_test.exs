@@ -83,6 +83,8 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
 
     @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]}
     def fetch_merge_request_pipelines(merge_request_iid) when is_binary(merge_request_iid) do
+      send(test_recipient(), {:gitlab_pipeline_fetch, merge_request_iid})
+
       pipelines =
         remote_state()
         |> Map.get(:pipelines, %{})
@@ -814,6 +816,114 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert state["issue_runs"]["42"]["stage4"]["pipeline_status"] == "failed"
   end
 
+  test "ci reconciliation returns no merge request when stage4 snapshot is absent" do
+    configure_mr_workflow_test()
+
+    assert {:ok, :no_merge_request} = MRWorkflow.reconcile_merge_request_ci("42")
+    refute_receive {:gitlab_pipeline_fetch, _}
+  end
+
+  test "ci reconciliation returns no pipeline when no merge request pipeline exists yet" do
+    configure_mr_workflow_test()
+    seed_merge_request_snapshot!("42", "run-ci", "11")
+
+    assert {:ok, :no_pipeline} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert_receive {:gitlab_pipeline_fetch, "11"}
+    refute_receive {:gitlab_comment, "42", _}
+  end
+
+  test "ci reconciliation normalizes pending and running statuses into stable classes" do
+    configure_mr_workflow_test()
+    seed_merge_request_snapshot!("42", "run-ci-pending", "12")
+
+    remote_put([:pipelines, "12"], [
+      %{"id" => 100, "status" => "pending", "ref" => "soc/issue-42/run-ci-pending", "updated_at" => "2026-05-31T12:00:00Z"},
+      %{"id" => 101, "status" => "running", "ref" => "soc/issue-42/run-ci-pending", "updated_at" => "2026-05-31T12:01:00Z"}
+    ])
+
+    assert {:ok, observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert observation["pipeline_status"] == "running"
+    assert observation["status_class"] == "ci-running"
+
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "CI status `running`"
+    assert body =~ "pipeline `101`"
+  end
+
+  test "ci reconciliation writes success exactly once for the newest relevant pipeline" do
+    configure_mr_workflow_test()
+    seed_merge_request_snapshot!("42", "run-ci-success", "13")
+
+    remote_put([:pipelines, "13"], [
+      %{"id" => 200, "status" => "failed", "ref" => "old-ref", "updated_at" => "2026-05-31T11:59:00Z"},
+      %{"id" => 201, "status" => "success", "ref" => "soc/issue-42/run-ci-success", "updated_at" => "2026-05-31T12:02:00Z"}
+    ])
+
+    assert {:ok, observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert observation["pipeline_id"] == "201"
+    assert observation["pipeline_status"] == "success"
+    assert observation["status_class"] == "ci-success"
+
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "CI status `success`"
+
+    assert {:ok, _repeat} = MRWorkflow.reconcile_merge_request_ci("42")
+    refute_receive {:gitlab_comment, "42", ^body}
+
+    stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
+    assert stage4["pipeline_id"] == "201"
+    assert stage4["last_writeback_status_class"] == "ci-success"
+  end
+
+  test "ci reconciliation writes failure for failed and canceled pipelines" do
+    configure_mr_workflow_test()
+    seed_merge_request_snapshot!("42", "run-ci-failure", "14")
+
+    remote_put([:pipelines, "14"], [
+      %{"id" => 300, "status" => "failed", "ref" => "soc/issue-42/run-ci-failure", "updated_at" => "2026-05-31T12:03:00Z"}
+    ])
+
+    assert {:ok, failed_observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert failed_observation["status_class"] == "ci-failure"
+    assert_receive {:gitlab_comment, "42", failed_body}
+    assert failed_body =~ "CI status `failed`"
+
+    remote_put([:pipelines, "14"], [
+      %{"id" => 301, "status" => "canceled", "ref" => "soc/issue-42/run-ci-failure", "updated_at" => "2026-05-31T12:04:00Z"}
+    ])
+
+    assert {:ok, canceled_observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert canceled_observation["pipeline_status"] == "canceled"
+    assert canceled_observation["status_class"] == "ci-failure"
+    assert_receive {:gitlab_comment, "42", canceled_body}
+    assert canceled_body =~ "CI status `canceled`"
+  end
+
+  test "ci reconciliation maps skipped and unknown statuses to ci-unknown" do
+    configure_mr_workflow_test()
+    seed_merge_request_snapshot!("42", "run-ci-unknown", "15")
+
+    remote_put([:pipelines, "15"], [
+      %{"id" => 400, "status" => "skipped", "ref" => "soc/issue-42/run-ci-unknown", "updated_at" => "2026-05-31T12:05:00Z"}
+    ])
+
+    assert {:ok, skipped_observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert skipped_observation["pipeline_status"] == "skipped"
+    assert skipped_observation["status_class"] == "ci-unknown"
+    assert_receive {:gitlab_comment, "42", skipped_body}
+    assert skipped_body =~ "CI status `skipped`"
+
+    remote_put([:pipelines, "15"], [
+      %{"id" => 401, "status" => "strange-status", "ref" => "soc/issue-42/run-ci-unknown", "updated_at" => "2026-05-31T12:06:00Z"}
+    ])
+
+    assert {:ok, unknown_observation} = MRWorkflow.reconcile_merge_request_ci("42")
+    assert unknown_observation["pipeline_status"] == "unknown"
+    assert unknown_observation["status_class"] == "ci-unknown"
+    assert_receive {:gitlab_comment, "42", unknown_body}
+    assert unknown_body =~ "CI status `unknown`"
+  end
+
   test "gitlab token stays out of codex runtime settings during mr workflow foundations" do
     previous_gitlab_api_token = System.get_env("GITLAB_API_TOKEN")
     on_exit(fn -> restore_env("GITLAB_API_TOKEN", previous_gitlab_api_token) end)
@@ -888,6 +998,21 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
   defp remote_put(path, value) do
     pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
     Agent.update(pid, &Kernel.put_in(&1, path, value))
+  end
+
+  defp seed_merge_request_snapshot!(issue_iid, run_fingerprint, merge_request_iid) do
+    source_branch = MRWorkflow.branch_name(issue_iid, run_fingerprint)
+
+    :ok =
+      StateStore.record_issue_run_snapshot(issue_iid, %{
+        run_fingerprint: run_fingerprint,
+        source_branch: source_branch,
+        branch_name: source_branch,
+        merge_request_iid: merge_request_iid,
+        merge_request_url: "https://gitlab.example.com/group/project/-/merge_requests/#{merge_request_iid}",
+        target_branch: "main",
+        stage4_status: "live-mr-created"
+      })
   end
 
   defp create_workspace_fixture! do

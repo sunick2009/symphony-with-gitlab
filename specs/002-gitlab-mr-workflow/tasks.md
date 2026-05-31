@@ -71,19 +71,17 @@
 
 ### Tests for User Story 2
 
-- [ ] T017 [P] [US2] Add MR pipeline status normalization tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-- [ ] T018 [P] [US2] Add CI success and failure reconciliation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-  Note: CI failure writeback helper coverage exists; full reconciliation coverage remains incomplete.
-- [ ] T019 [US2] Add lifecycle coverage for Stage 4 CI writeback in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
+- [x] T017 [P] [US2] Add MR pipeline status normalization tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+- [x] T018 [P] [US2] Add CI success and failure reconciliation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
+- [x] T019 [US2] Add lifecycle coverage for Stage 4 CI writeback in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 2
 
 - [ ] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
 - [x] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
-- [ ] T021 [US2] Implement Stage 4 CI observation persistence and status-class dedupe in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
-- [ ] T022 [US2] Implement CI success and failure issue writeback flow in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-  Note: CI failure writeback helper exists; success flow and reconciliation integration remain incomplete.
-- [ ] T023 [US2] Integrate CI reconciliation scheduling into `elixir/lib/symphony_elixir/orchestrator.ex`
+- [x] T021 [US2] Implement Stage 4 CI observation persistence and status-class dedupe in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
+- [x] T022 [US2] Implement CI success and failure issue writeback flow in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T023 [US2] Integrate CI reconciliation scheduling into `elixir/lib/symphony_elixir/orchestrator.ex`
 
 **Checkpoint**: Stage 4 reflects CI status to the originating issue without duplicate comments.
 
@@ -128,7 +126,7 @@
 - [x] T032 [P] [US4] Document Stage 4 token scopes, branch naming, and CI behavior in `elixir/README.md`
 - [x] T033 [P] [US4] Add Stage 4 staging validation steps in `specs/002-gitlab-mr-workflow/quickstart.md`
 - [x] T034 [US4] Extend the staging helper workflow for MR creation and CI observation in `specs/001-gitlab-control-plane/scripts/gitlab-stage2-validate.sh`
-- [ ] T035 [US4] Record Stage 4 staging evidence and known risks in `specs/002-gitlab-mr-workflow/plan.md`
+- [x] T035 [US4] Record Stage 4 staging evidence and known risks in `specs/002-gitlab-mr-workflow/plan.md`
 
 **Checkpoint**: Stage 4 is documented and staging validation is reproducible.
 
@@ -138,10 +136,10 @@
 
 **Purpose**: Verify Stage 4 matches the spec, preserves security boundaries, and is ready for staging-only validation.
 
-- [ ] T036 Run targeted Stage 4 tests in `elixir/`
-- [ ] T037 Run relevant full Elixir validation in `elixir/`
-- [ ] T038 Run `mix specs.check`, `mix format --check-formatted`, and `git diff --check`
-- [ ] T039 Run clean-room search checks against `elixir/lib`, `elixir/test`, `elixir/README.md`, and `specs/002-gitlab-mr-workflow`
+- [x] T036 Run targeted Stage 4 tests in `elixir/`
+- [x] T037 Run relevant full Elixir validation in `elixir/`
+- [x] T038 Run `mix specs.check`, `mix format --check-formatted`, and `git diff --check`
+- [x] T039 Run clean-room search checks against `elixir/lib`, `elixir/test`, `elixir/README.md`, and `specs/002-gitlab-mr-workflow`
 - [ ] T040 Run Stage 4 disposable staging validation and record sanitized results in `specs/002-gitlab-mr-workflow/quickstart.md`
 
 ## Dependencies & Execution Order
