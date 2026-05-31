@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
+  alias SymphonyElixir.GitLab.MRWorkflow
+  alias SymphonyElixir.GitLab.StateStore
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -205,7 +207,7 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
       state
-      |> complete_issue(issue_id)
+      |> complete_issue(issue_id, running_entry)
       |> schedule_issue_retry(issue_id, 1, %{
         identifier: running_entry.identifier,
         delay_type: :continuation,
@@ -1011,7 +1013,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
-  defp complete_issue(%State{} = state, issue_id) do
+  defp complete_issue(%State{} = state, issue_id, running_entry) do
+    maybe_finalize_gitlab_mr_dry_run(issue_id, running_entry)
     maybe_update_gitlab_run_lifecycle(issue_id, "soc::human-review")
     maybe_create_gitlab_run_comment(issue_id, "Symphony agent run completed and moved this issue to `soc::human-review`.")
 
@@ -1216,6 +1219,45 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_create_gitlab_run_comment(_issue_id, _body), do: :ok
+
+  defp maybe_finalize_gitlab_mr_dry_run(issue_id, %{issue: %Issue{} = issue} = running_entry)
+       when is_binary(issue_id) do
+    workspace_path = Map.get(running_entry, :workspace_path) || fallback_workspace_path(issue)
+
+    case MRWorkflow.finalize_dry_run(issue, workspace_path, []) do
+      {:ok, {:planned, plan}} ->
+        Logger.info("Recorded GitLab MR dry-run finalization plan issue_id=#{issue_id} branch=#{plan.source_branch} action_digest=#{plan.action_digest}")
+
+        :ok
+
+      {:ok, {:noop, plan}} ->
+        Logger.info("Recorded GitLab MR dry-run no-op issue_id=#{issue_id} branch=#{plan.source_branch}")
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("GitLab MR dry-run finalization failed for issue_id=#{issue_id}: #{inspect(reason)}")
+
+        _ =
+          StateStore.record_issue_run_snapshot(issue_id, %{
+            stage4_status: "dry-run-error",
+            dry_run: true,
+            stage4_error: inspect(reason),
+            workspace_path: workspace_path
+          })
+
+        :ok
+    end
+  end
+
+  defp maybe_finalize_gitlab_mr_dry_run(_issue_id, _running_entry), do: :ok
+
+  defp fallback_workspace_path(%Issue{identifier: identifier}) when is_binary(identifier) do
+    safe_identifier = String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+    Path.join(Config.settings!().workspace.root, safe_identifier)
+  end
+
+  defp fallback_workspace_path(_issue), do: nil
 
   defp gitlab_lifecycle_comment_key(body) when is_binary(body) do
     cond do

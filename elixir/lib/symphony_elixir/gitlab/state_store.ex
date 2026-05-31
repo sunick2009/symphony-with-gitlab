@@ -50,6 +50,16 @@ defmodule SymphonyElixir.GitLab.StateStore do
     call({:record_issue_run_snapshot, state_path(), issue_iid, attrs})
   end
 
+  @spec fetch_issue_run_snapshot(String.t()) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_issue_run_snapshot(issue_iid) when is_binary(issue_iid) do
+    state_path()
+    |> load_state()
+    |> case do
+      {:ok, state} -> {:ok, get_in(state, ["issue_runs", issue_iid])}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec state_path() :: Path.t()
   def state_path do
     settings = Config.settings!()

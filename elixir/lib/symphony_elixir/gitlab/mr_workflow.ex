@@ -3,26 +3,111 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
   Stage 4 GitLab merge request workflow helpers.
   """
 
-  alias SymphonyElixir.GitLab.Adapter
+  require Logger
+
+  alias SymphonyElixir.{GitLab.Adapter, GitLab.StateStore, Linear.Issue, PathSafety}
 
   @branch_prefix "soc/issue-"
+  @manifest_relpath ".symphony/gitlab_artifacts.json"
+  @manifest_version 1
+  @max_artifact_bytes 262_144
+  @default_target_branch "main"
+  @allowed_repo_prefixes ["elixir/", "specs/", ".specify/", ".agents/"]
+  @allowed_repo_exact ["README.md", "AGENTS.md"]
+  @blocked_path_segments [".git", ".codex"]
+  @blocked_path_suffixes [
+    ".env",
+    ".env.local",
+    ".pem",
+    ".key",
+    "auth.json",
+    "config.json",
+    "settings.json",
+    ".gitlab-control-plane-state.json"
+  ]
+  @blocked_path_substrings [
+    "/tunnels/",
+    "/tunnel/",
+    "/secrets/",
+    "/tokens/",
+    "/auth/",
+    "/state/"
+  ]
+  @allowed_text_content_types [
+    "text/plain",
+    "text/markdown",
+    "text/x-elixir",
+    "application/json",
+    "application/x-yaml",
+    "text/yaml"
+  ]
+
+  @type artifact_manifest :: %{
+          version: pos_integer(),
+          artifacts: [artifact_entry()]
+        }
+
+  @type artifact_entry :: %{
+          repository_path: String.t(),
+          workspace_source_path: String.t(),
+          action: String.t(),
+          description: String.t() | nil,
+          content_type: String.t() | nil,
+          metadata: map()
+        }
+
+  @type commit_action :: %{
+          action: String.t(),
+          file_path: String.t(),
+          content: String.t()
+        }
+
+  @type dry_run_plan :: %{
+          issue_iid: String.t(),
+          run_fingerprint: String.t(),
+          source_branch: String.t(),
+          target_branch: String.t(),
+          commit_message: String.t(),
+          merge_request_title: String.t(),
+          merge_request_description: String.t(),
+          commit_actions: [commit_action()],
+          manifest_digest: String.t() | nil,
+          collected_artifact_digest: String.t() | nil,
+          action_digest: String.t() | nil,
+          branch_name: String.t(),
+          would_create_branch: boolean(),
+          would_create_commit: boolean(),
+          would_create_merge_request: boolean(),
+          no_op: boolean()
+        }
+
+  @spec manifest_relpath() :: String.t()
+  def manifest_relpath, do: @manifest_relpath
 
   @spec branch_name(String.t(), String.t()) :: String.t()
   def branch_name(issue_iid, run_fingerprint)
       when is_binary(issue_iid) and is_binary(run_fingerprint) do
     sanitized_issue_iid =
       issue_iid
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9]+/u, "-")
-      |> String.trim("-")
+      |> sanitize_branch_component()
 
     sanitized_fingerprint =
       run_fingerprint
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9]+/u, "-")
-      |> String.trim("-")
+      |> sanitize_branch_component()
 
     "#{@branch_prefix}#{sanitized_issue_iid}/#{sanitized_fingerprint}"
+  end
+
+  @spec finalize_dry_run(Issue.t() | map(), Path.t() | nil, keyword()) ::
+          {:ok, {:planned, dry_run_plan()}}
+          | {:ok, {:noop, dry_run_plan()}}
+          | {:error, term()}
+  def finalize_dry_run(%Issue{id: issue_iid} = issue, workspace_path, opts) when is_binary(issue_iid) do
+    do_finalize_dry_run(issue, workspace_path, opts)
+  end
+
+  def finalize_dry_run(%{id: issue_iid} = issue, workspace_path, opts) when is_binary(issue_iid) do
+    do_finalize_dry_run(struct(Issue, issue), workspace_path, opts)
   end
 
   @spec write_merge_request_link_comment(String.t(), String.t(), String.t(), String.t()) ::
@@ -59,5 +144,459 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
         status_class: "ci-failure"
       }
     )
+  end
+
+  defp do_finalize_dry_run(%Issue{id: issue_iid} = issue, workspace_path, opts)
+       when is_binary(issue_iid) do
+    with {:ok, canonical_workspace} <- validate_workspace_root(workspace_path),
+         {:ok, manifest_result} <- load_manifest(canonical_workspace),
+         {:ok, issue_run} <- StateStore.fetch_issue_run_snapshot(issue_iid) do
+      run_fingerprint = run_fingerprint(issue_iid, canonical_workspace)
+      issue_run_stage4 = get_in(issue_run || %{}, ["stage4"]) || %{}
+
+      case manifest_result do
+        :missing ->
+          plan =
+            no_op_plan(
+              issue,
+              run_fingerprint,
+              branch_name(issue_iid, run_fingerprint),
+              "manifest-missing"
+            )
+
+          persist_dry_run_plan(issue_iid, canonical_workspace, plan)
+
+        {:manifest, manifest} ->
+          with {:ok, normalized_manifest} <- validate_manifest(manifest),
+               {:ok, collected} <- collect_artifacts(canonical_workspace, normalized_manifest, opts),
+               {:ok, plan} <- build_plan(issue, run_fingerprint, normalized_manifest, collected, opts),
+               :ok <- ensure_digest_compatibility(issue_iid, issue_run_stage4, plan),
+               :ok <- persist_dry_run_plan(issue_iid, canonical_workspace, plan) do
+            if plan.no_op do
+              {:ok, {:noop, plan}}
+            else
+              {:ok, {:planned, plan}}
+            end
+          end
+      end
+    end
+  end
+
+  defp validate_workspace_root(nil), do: {:error, :missing_workspace_path}
+
+  defp validate_workspace_root(workspace_path) when is_binary(workspace_path) do
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace_path),
+         true <- File.dir?(canonical_workspace) or {:error, {:workspace_not_found, canonical_workspace}} do
+      {:ok, canonical_workspace}
+    end
+  end
+
+  defp load_manifest(canonical_workspace) when is_binary(canonical_workspace) do
+    manifest_path = Path.join(canonical_workspace, @manifest_relpath)
+
+    case File.read(manifest_path) do
+      {:ok, raw_manifest} ->
+        case Jason.decode(raw_manifest) do
+          {:ok, manifest} when is_map(manifest) -> {:ok, {:manifest, manifest}}
+          {:ok, _other} -> {:error, {:invalid_artifact_manifest, :not_a_map}}
+          {:error, reason} -> {:error, {:invalid_artifact_manifest_json, inspect(reason)}}
+        end
+
+      {:error, :enoent} ->
+        {:ok, :missing}
+
+      {:error, reason} ->
+        {:error, {:artifact_manifest_read_failed, manifest_path, reason}}
+    end
+  end
+
+  defp validate_manifest(%{"version" => @manifest_version, "artifacts" => artifacts})
+       when is_list(artifacts) do
+    normalized =
+      artifacts
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {artifact, index}, {:ok, acc} ->
+        case validate_artifact_entry(artifact, index) do
+          {:ok, normalized_artifact} -> {:cont, {:ok, acc ++ [normalized_artifact]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case normalized do
+      {:ok, normalized_artifacts} ->
+        {:ok,
+         %{
+           version: @manifest_version,
+           artifacts: normalized_artifacts
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_manifest(%{"version" => version}) when version != @manifest_version do
+    {:error, {:unsupported_artifact_manifest_version, version}}
+  end
+
+  defp validate_manifest(_manifest), do: {:error, :invalid_artifact_manifest}
+
+  defp validate_artifact_entry(%{} = artifact, index) do
+    repository_path = Map.get(artifact, "repository_path")
+    workspace_source_path = Map.get(artifact, "workspace_source_path")
+    action = Map.get(artifact, "action")
+
+    cond do
+      not is_binary(repository_path) or String.trim(repository_path) == "" ->
+        {:error, {:invalid_artifact_entry, index, :missing_repository_path}}
+
+      not is_binary(workspace_source_path) or String.trim(workspace_source_path) == "" ->
+        {:error, {:invalid_artifact_entry, index, :missing_workspace_source_path}}
+
+      action not in ["create", "update"] ->
+        {:error, {:invalid_artifact_entry, index, :unsupported_action}}
+
+      true ->
+        {:ok,
+         %{
+           repository_path: String.trim(repository_path),
+           workspace_source_path: String.trim(workspace_source_path),
+           action: action,
+           description: optional_trimmed_string(Map.get(artifact, "description")),
+           content_type: optional_trimmed_string(Map.get(artifact, "content_type")),
+           metadata: normalize_metadata(Map.get(artifact, "metadata"))
+         }}
+    end
+  end
+
+  defp collect_artifacts(canonical_workspace, manifest, opts)
+       when is_binary(canonical_workspace) and is_map(manifest) and is_list(opts) do
+    allowed_repo_prefixes = Keyword.get(opts, :allowed_repo_prefixes, @allowed_repo_prefixes)
+    max_artifact_bytes = Keyword.get(opts, :max_artifact_bytes, @max_artifact_bytes)
+    allow_binary_artifacts = Keyword.get(opts, :allow_binary_artifacts, false)
+
+    manifest.artifacts
+    |> Enum.reduce_while({:ok, []}, fn artifact, {:ok, acc} ->
+      with :ok <- validate_declared_paths(artifact, allowed_repo_prefixes),
+           {:ok, canonical_source_path} <-
+             resolve_workspace_source_path(canonical_workspace, artifact.workspace_source_path),
+           {:ok, content} <-
+             read_artifact_content(canonical_source_path, artifact, max_artifact_bytes, allow_binary_artifacts) do
+        collected_artifact =
+          Map.put(artifact, :content, content)
+
+        {:cont, {:ok, acc ++ [collected_artifact]}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp validate_declared_paths(artifact, allowed_repo_prefixes) do
+    with :ok <- validate_relative_path(:repository_path, artifact.repository_path),
+         :ok <- validate_relative_path(:workspace_source_path, artifact.workspace_source_path),
+         :ok <- reject_blocked_repo_path(artifact.repository_path),
+         :ok <- reject_blocked_repo_path(artifact.workspace_source_path),
+         :ok <- validate_allowed_repo_path(artifact.repository_path, allowed_repo_prefixes) do
+      :ok
+    end
+  end
+
+  defp validate_relative_path(_field, path) when not is_binary(path), do: {:error, :invalid_artifact_path}
+
+  defp validate_relative_path(field, path) do
+    cond do
+      Path.type(path) == :absolute ->
+        {:error, {field, :absolute_path_rejected, path}}
+
+      path == "." or path == "" ->
+        {:error, {field, :empty_path_rejected, path}}
+
+      Enum.any?(Path.split(path), &(&1 == "..")) ->
+        {:error, {field, :path_traversal_rejected, path}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp reject_blocked_repo_path(path) when is_binary(path) do
+    downcased = String.downcase(path)
+    segments = Path.split(downcased)
+
+    cond do
+      Enum.any?(@blocked_path_segments, &(&1 in segments)) ->
+        {:error, {:blocked_path_segment, path}}
+
+      Enum.any?(@blocked_path_suffixes, &String.ends_with?(downcased, &1)) ->
+        {:error, {:blocked_path_suffix, path}}
+
+      Enum.any?(@blocked_path_substrings, &String.contains?(downcased, &1)) ->
+        {:error, {:blocked_path_substring, path}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_allowed_repo_path(path, allowed_repo_prefixes) when is_binary(path) do
+    if path in @allowed_repo_exact or Enum.any?(allowed_repo_prefixes, &String.starts_with?(path, &1)) do
+      :ok
+    else
+      {:error, {:disallowed_repo_path, path}}
+    end
+  end
+
+  defp resolve_workspace_source_path(canonical_workspace, source_relpath)
+       when is_binary(canonical_workspace) and is_binary(source_relpath) do
+    source_path = Path.join(canonical_workspace, source_relpath)
+
+    with {:ok, canonical_source_path} <- PathSafety.canonicalize(source_path),
+         :ok <- ensure_path_inside_workspace(canonical_workspace, canonical_source_path),
+         true <- File.regular?(canonical_source_path) or {:error, {:artifact_source_missing, source_relpath}} do
+      {:ok, canonical_source_path}
+    end
+  end
+
+  defp ensure_path_inside_workspace(canonical_workspace, canonical_source_path) do
+    workspace_prefix = String.trim_trailing(canonical_workspace, "/") <> "/"
+
+    cond do
+      canonical_source_path == canonical_workspace ->
+        {:error, {:artifact_source_is_workspace_root, canonical_source_path}}
+
+      String.starts_with?(canonical_source_path <> "/", workspace_prefix) ->
+        :ok
+
+      true ->
+        {:error, {:artifact_source_outside_workspace, canonical_source_path, canonical_workspace}}
+    end
+  end
+
+  defp read_artifact_content(canonical_source_path, artifact, max_artifact_bytes, allow_binary_artifacts)
+       when is_binary(canonical_source_path) and is_map(artifact) do
+    case File.stat(canonical_source_path) do
+      {:ok, %File.Stat{size: size}} when size > max_artifact_bytes ->
+        {:error, {:artifact_too_large, artifact.workspace_source_path, size, max_artifact_bytes}}
+
+      {:ok, %File.Stat{}} ->
+        with {:ok, content} <- File.read(canonical_source_path),
+             :ok <- validate_artifact_content(content, artifact, allow_binary_artifacts) do
+          {:ok, content}
+        end
+
+      {:error, reason} ->
+        {:error, {:artifact_stat_failed, canonical_source_path, reason}}
+    end
+  end
+
+  defp validate_artifact_content(content, artifact, allow_binary_artifacts) when is_binary(content) do
+    content_type = artifact.content_type
+    binary_content? = String.contains?(content, <<0>>) or not String.valid?(content)
+
+    cond do
+      binary_content? and allow_binary_artifacts and explicit_binary_allowed?(artifact) ->
+        :ok
+
+      binary_content? ->
+        {:error, {:unsupported_binary_artifact, artifact.workspace_source_path}}
+
+      is_binary(content_type) and content_type not in @allowed_text_content_types and
+          not String.starts_with?(content_type, "text/") ->
+        {:error, {:unsupported_content_type, artifact.workspace_source_path, content_type}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp explicit_binary_allowed?(artifact) when is_map(artifact) do
+    artifact.metadata["allow_binary"] == true
+  end
+
+  defp build_plan(issue, run_fingerprint, manifest, collected_artifacts, opts)
+       when is_map(manifest) and is_list(collected_artifacts) and is_list(opts) do
+    issue_iid = issue.id
+    source_branch = branch_name(issue_iid, run_fingerprint)
+    target_branch = Keyword.get(opts, :target_branch, @default_target_branch)
+    commit_actions = Enum.map(collected_artifacts, &to_commit_action/1)
+    manifest_digest = digest_manifest(manifest)
+    collected_artifact_digest = digest_collected_artifacts(collected_artifacts)
+    action_digest = digest_commit_actions(commit_actions)
+    no_op = commit_actions == []
+    commit_message = "chore(gitlab): update issue ##{issue_iid} artifacts"
+    merge_request_title = "Issue ##{issue_iid}: #{issue.title || "Generated update"}"
+
+    merge_request_description =
+      [
+        "Generated by Symphony dry-run planning.",
+        "",
+        "- Issue: #{issue.identifier || "##{issue_iid}"}",
+        "- Manifest digest: `#{manifest_digest}`",
+        "- Action digest: `#{action_digest}`"
+      ]
+      |> Enum.join("\n")
+
+    {:ok,
+     %{
+       issue_iid: issue_iid,
+       run_fingerprint: run_fingerprint,
+       source_branch: source_branch,
+       target_branch: target_branch,
+       commit_message: commit_message,
+       merge_request_title: merge_request_title,
+       merge_request_description: merge_request_description,
+       commit_actions: commit_actions,
+       manifest_digest: manifest_digest,
+       collected_artifact_digest: collected_artifact_digest,
+       action_digest: action_digest,
+       branch_name: source_branch,
+       would_create_branch: not no_op,
+       would_create_commit: not no_op,
+       would_create_merge_request: not no_op,
+       no_op: no_op
+     }}
+  end
+
+  defp no_op_plan(issue, run_fingerprint, source_branch, reason) do
+    %{
+      issue_iid: issue.id,
+      run_fingerprint: run_fingerprint,
+      source_branch: source_branch,
+      target_branch: @default_target_branch,
+      commit_message: "chore(gitlab): no-op for issue ##{issue.id}",
+      merge_request_title: "Issue ##{issue.id}: no artifact changes",
+      merge_request_description: "Dry-run finalization produced no repository artifacts (#{reason}).",
+      commit_actions: [],
+      manifest_digest: nil,
+      collected_artifact_digest: nil,
+      action_digest: nil,
+      branch_name: source_branch,
+      would_create_branch: false,
+      would_create_commit: false,
+      would_create_merge_request: false,
+      no_op: true
+    }
+  end
+
+  defp ensure_digest_compatibility(_issue_iid, stage4_snapshot, _plan)
+       when map_size(stage4_snapshot) == 0,
+       do: :ok
+
+  defp ensure_digest_compatibility(issue_iid, stage4_snapshot, plan)
+       when is_binary(issue_iid) and is_map(stage4_snapshot) and is_map(plan) do
+    previous_run_fingerprint = Map.get(stage4_snapshot, "run_fingerprint")
+    previous_manifest_digest = Map.get(stage4_snapshot, "manifest_digest")
+    previous_action_digest = Map.get(stage4_snapshot, "action_digest")
+
+    cond do
+      previous_run_fingerprint in [nil, "", plan.run_fingerprint] and
+        previous_manifest_digest in [nil, plan.manifest_digest] and
+          previous_action_digest in [nil, plan.action_digest] ->
+        :ok
+
+      previous_run_fingerprint == plan.run_fingerprint ->
+        {:error,
+         {:dry_run_conflict, issue_iid,
+          %{
+            previous_manifest_digest: previous_manifest_digest,
+            previous_action_digest: previous_action_digest,
+            next_manifest_digest: plan.manifest_digest,
+            next_action_digest: plan.action_digest
+          }}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp persist_dry_run_plan(issue_iid, canonical_workspace, plan)
+       when is_binary(issue_iid) and is_binary(canonical_workspace) and is_map(plan) do
+    StateStore.record_issue_run_snapshot(issue_iid, %{
+      stage4_status: if(plan.no_op, do: "no-op", else: "dry-run-planned"),
+      dry_run: true,
+      workspace_path: canonical_workspace,
+      run_fingerprint: plan.run_fingerprint,
+      branch_name: plan.branch_name,
+      target_branch: plan.target_branch,
+      manifest_digest: plan.manifest_digest,
+      collected_artifact_digest: plan.collected_artifact_digest,
+      action_digest: plan.action_digest,
+      commit_message: plan.commit_message,
+      merge_request_title: plan.merge_request_title,
+      no_op: plan.no_op,
+      commit_actions: Enum.map(plan.commit_actions, &stringify_map/1)
+    })
+    |> case do
+      :ok ->
+        if plan.no_op do
+          {:ok, {:noop, plan}}
+        else
+          {:ok, {:planned, plan}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp to_commit_action(collected_artifact) do
+    %{
+      action: collected_artifact.action,
+      file_path: collected_artifact.repository_path,
+      content: collected_artifact.content
+    }
+  end
+
+  defp digest_manifest(manifest) when is_map(manifest), do: digest_term(manifest)
+  defp digest_collected_artifacts(collected_artifacts) when is_list(collected_artifacts), do: digest_term(collected_artifacts)
+  defp digest_commit_actions(commit_actions) when is_list(commit_actions), do: digest_term(commit_actions)
+
+  defp digest_term(term) do
+    term
+    |> normalize_for_digest()
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp normalize_for_digest(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested_value} -> {to_string(key), normalize_for_digest(nested_value)} end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Enum.into(%{})
+  end
+
+  defp normalize_for_digest(value) when is_list(value), do: Enum.map(value, &normalize_for_digest/1)
+  defp normalize_for_digest(value), do: value
+
+  defp sanitize_branch_component(value) when is_binary(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/u, "-")
+    |> String.trim("-")
+  end
+
+  defp run_fingerprint(issue_iid, canonical_workspace) do
+    digest_term(%{issue_iid: issue_iid, workspace_path: canonical_workspace})
+    |> binary_part(0, 12)
+  end
+
+  defp optional_trimmed_string(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp optional_trimmed_string(_value), do: nil
+
+  defp normalize_metadata(%{} = metadata), do: metadata
+  defp normalize_metadata(_metadata), do: %{}
+
+  defp stringify_map(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 end
