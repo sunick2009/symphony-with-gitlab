@@ -1,0 +1,10 @@
+# Local historical prompts and reference-only workspace notes.
+codex_prompt_extend_symphony_py_gitlab_adapter.md
+symphony_py_repo_context_for_codex.md
+
+# Local editor container experiment. Review before promoting to supported setup.
+.devcontainer/
+
+# GitLab adapter runtime state must remain outside version control.
+.gitlab-control-plane-state.json
+*.gitlab-control-plane-state.json
