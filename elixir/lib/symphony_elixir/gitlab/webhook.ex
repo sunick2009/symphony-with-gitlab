@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.Command, GitLab.StateStore}
+  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.Audit, GitLab.Command, GitLab.StateStore}
 
   @not_implemented_commands ~w(status retry cancel)
   @run_blocking_labels [
@@ -20,6 +20,12 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   @spec handle(map(), map()) :: {:ok, atom()} | {:error, term()}
   def handle(headers, payload) when is_map(headers) and is_map(payload) do
+    Audit.emit("webhook.received", %{
+      source: "gitlab",
+      issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+      event_type: header(headers, "x-gitlab-event")
+    })
+
     with :ok <- validate_secret(headers),
          {:ok, event_key} <- event_key(headers, payload),
          :ok <- begin_event(event_key, headers, payload) do
@@ -28,9 +34,25 @@ defmodule SymphonyElixir.GitLab.Webhook do
       result
     else
       {:ok, :duplicate} ->
+        Audit.emit("duplicate.suppressed", %{
+          source: "gitlab",
+          issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+          reason: "webhook_replay"
+        })
+
         {:ok, :duplicate}
 
       {:error, reason} ->
+        Audit.emit(
+          "error.recorded",
+          %{
+            source: "gitlab",
+            issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+            reason: inspect(reason)
+          },
+          level: :warning
+        )
+
         {:error, reason}
     end
   end
@@ -58,6 +80,13 @@ defmodule SymphonyElixir.GitLab.Webhook do
   defp handle_commands(:ignore, _payload, _event_key), do: {:ok, :ignored}
 
   defp handle_commands({:error, {:unknown_command, command}}, payload, event_key) do
+    Audit.emit("command.parsed", %{
+      issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+      command: command,
+      result: "unsupported",
+      run_id: event_key
+    })
+
     with {:ok, issue_iid} <- issue_iid(payload) do
       Adapter.create_comment_once(issue_iid, "webhook:#{event_key}:unsupported", "Unsupported Symphony command: `/soc #{command}`.")
     end
@@ -65,6 +94,15 @@ defmodule SymphonyElixir.GitLab.Webhook do
   end
 
   defp handle_commands({:ok, commands}, payload, event_key) do
+    first_command = commands |> List.first() |> Map.get(:name)
+
+    Audit.emit("command.parsed", %{
+      issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
+      command: first_command,
+      result: "accepted",
+      run_id: event_key
+    })
+
     commands
     |> List.first()
     |> handle_command(payload, event_key)
@@ -87,6 +125,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
 
   defp handle_run_command(payload, event_key) do
     with {:ok, issue_iid} <- issue_iid(payload),
+         {:ok, _context} <- Audit.start_trace(issue_iid, event_key, %{source: "gitlab", event_key: event_key}),
          :ok <- ensure_issue_open(payload, issue_iid, event_key),
          :ok <- ensure_issue_not_already_in_lifecycle(payload, issue_iid, event_key),
          :ok <- Adapter.transition_issue_labels(issue_iid, "soc::queued"),
@@ -96,6 +135,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
              "webhook:#{event_key}:accepted",
              "Symphony accepted `/soc run` and queued this issue for an agent run."
            ) do
+      Audit.emit("issue.queued", %{issue_iid: issue_iid, run_id: event_key, source: "gitlab"})
       {:ok, :handled}
     else
       {:error, reason} -> {:error, reason}
@@ -105,6 +145,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
   defp ensure_issue_open(payload, issue_iid, event_key) do
     if issue_state(payload) == "closed" do
       Adapter.create_comment_once(issue_iid, "webhook:#{event_key}:closed", "Symphony cannot run on a closed GitLab issue.")
+      Audit.emit("duplicate.suppressed", %{issue_iid: issue_iid, run_id: event_key, reason: "closed_issue"})
       {:error, :closed_issue}
     else
       :ok
@@ -121,6 +162,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
         "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."
       )
 
+      Audit.emit("duplicate.suppressed", %{issue_iid: issue_iid, run_id: event_key, reason: "issue_already_in_lifecycle"})
       {:error, :issue_already_in_lifecycle}
     else
       :ok

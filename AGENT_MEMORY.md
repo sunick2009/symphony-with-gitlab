@@ -38,6 +38,9 @@ GitLab issue or comment
   dry-run planning, staging-gated live branch/commit/MR creation, idempotent
   MR-link writeback, CI reconciliation, disposable CI success/failure staging
   validation, and restart-safe recovery for partial remote success.
+- **Stage 4.5: Run timeline and audit observability.** Added structured audit
+  events, trace and run correlation, append-only local audit logs, structured
+  logger metadata, and a local timeline query path for GitLab runs.
 
 ## Current Verified Capabilities
 
@@ -65,6 +68,9 @@ GitLab issue or comment
 - Stage 4.4 restart hardening for remote branch, commit, MR, and MR-link
   partial-failure recovery with deterministic provenance checks and mismatch
   blocking.
+- Stage 4.5 append-only audit events with trace correlation for webhook
+  handling, run lifecycle, MR mutation, CI reconciliation, duplicate
+  suppression, and recovery paths.
 
 ## Important Implementation Boundaries
 
@@ -93,6 +99,8 @@ GitLab issue or comment
 - Stage 4 remains staging-validated only. CI reconciliation is polling-based,
   and Stage 4.4 restart-hardening remains single-node because persistent state
   is still local file-backed state rather than a shared store.
+- Audit observability remains local-only. The timeline query reads from the
+  local JSONL audit log and is not a centralized or multi-node audit system.
 - Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
   isolation, automatic blocking, and other production-impacting actions are
   not implemented.

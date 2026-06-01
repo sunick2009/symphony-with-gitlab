@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.GitLabMRWorkflowTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.GitLab.{Adapter, Client, MRWorkflow, StateStore}
+  alias SymphonyElixir.GitLab.{Adapter, Audit, Client, MRWorkflow, StateStore}
 
   defmodule FakeGitLabMRClient do
     @spec fetch_branch(String.t()) :: {:ok, map() | nil}
@@ -723,6 +723,13 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert stage4_snapshot["merge_request_url"] =~ "/merge_requests/"
     assert stage4_snapshot["commit_sha"] =~ "sha-"
     assert stage4_snapshot["commit_message"] =~ "[stage4:"
+
+    event_types = issue_event_types("42")
+    assert "mr_plan.created" in event_types
+    assert "branch.created" in event_types
+    assert "commit.created" in event_types
+    assert "mr.created" in event_types
+    assert "mr_link_comment.written" in event_types
   end
 
   test "live mutation guard blocks non-allowlisted projects" do
@@ -919,6 +926,11 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert body =~ "/merge_requests/71"
     assert snapshot["merge_request_iid"] == "71"
     assert snapshot["merge_request_status"] == "recovered"
+
+    event_types = issue_event_types("42")
+    assert "branch.recovered" in event_types
+    assert "commit.recovered" in event_types
+    assert "mr.recovered" in event_types
   end
 
   test "live mutation retries only the mr link comment when mr creation succeeded remotely but comment writeback failed" do
@@ -1154,6 +1166,10 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
     assert stage4["pipeline_id"] == "201"
     assert stage4["last_writeback_status_class"] == "ci-success"
+
+    event_types = issue_event_types("42")
+    assert "ci_pipeline.observed" in event_types
+    assert "ci_comment.written" in event_types
   end
 
   test "ci reconciliation writes failure for failed and canceled pipelines" do
@@ -1178,6 +1194,13 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert canceled_observation["status_class"] == "ci-failure"
     assert_receive {:gitlab_comment, "42", canceled_body}
     assert canceled_body =~ "CI status `canceled`"
+
+    ci_failure_events =
+      Audit.list_events(issue_iid: "42")
+      |> Enum.filter(&(&1["event_type"] == "ci_pipeline.observed"))
+
+    assert Enum.any?(ci_failure_events, &(get_in(&1, ["details", "pipeline_status"]) == "failed"))
+    assert Enum.any?(ci_failure_events, &(get_in(&1, ["details", "pipeline_status"]) == "canceled"))
   end
 
   test "ci reconciliation maps skipped and unknown statuses to ci-unknown" do
@@ -1338,5 +1361,10 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, contents)
     path
+  end
+
+  defp issue_event_types(issue_iid) do
+    Audit.list_events(issue_iid: issue_iid)
+    |> Enum.map(& &1["event_type"])
   end
 end

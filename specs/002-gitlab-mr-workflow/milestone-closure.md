@@ -23,6 +23,8 @@ No new product features are introduced by this closure note.
 - GitLab issue and note webhook handling with secret validation
 - `/soc run` parsing and duplicate command suppression
 - adapter-owned issue label transitions and lifecycle comments
+- structured append-only audit events with issue, trace, run, and
+  run-fingerprint correlation
 - dry-run Stage 4 artifact planning with deterministic manifest and action
   digests
 - staging-gated live branch creation, commit creation, and merge request
@@ -56,6 +58,9 @@ No new product features are introduced by this closure note.
 - Adapter-owned mutation remains mandatory for branch creation, commit
   creation, merge request creation, issue comments, issue label transitions,
   and CI writeback.
+- Audit logs remain local and sanitized. They must not store GitLab API tokens,
+  webhook secrets, raw prompt content, `.env` values, Codex auth files, or
+  full artifact bodies.
 - Credentialed agent-owned `git push` remains disallowed.
 - Sanitized local token-boundary traces continued to show
   `GITLAB_API_TOKEN=unset` and `GITLAB_WEBHOOK_SECRET=unset`.
@@ -81,4 +86,3 @@ No new product features are introduced by this closure note.
 - production GitLab project targeting
 - endpoint isolation or blocking actions
 - multi-node production deployment
-

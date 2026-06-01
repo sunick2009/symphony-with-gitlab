@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.StateStore, Linear.Issue, PathSafety}
+  alias SymphonyElixir.{Config, GitLab.Adapter, GitLab.Audit, GitLab.StateStore, Linear.Issue, PathSafety}
 
   @branch_prefix "soc/issue-"
   @manifest_relpath ".symphony/gitlab_artifacts.json"
@@ -135,17 +135,29 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
   def write_merge_request_link_comment(issue_iid, run_fingerprint, merge_request_url, source_branch)
       when is_binary(issue_iid) and is_binary(run_fingerprint) and is_binary(merge_request_url) and
              is_binary(source_branch) do
-    Adapter.create_comment_once(
-      issue_iid,
-      "mr:#{run_fingerprint}:link",
-      "Symphony created merge request: #{merge_request_url} from branch `#{source_branch}`.",
-      %{
+    result =
+      Adapter.create_comment_once(
+        issue_iid,
+        "mr:#{run_fingerprint}:link",
+        "Symphony created merge request: #{merge_request_url} from branch `#{source_branch}`.",
+        %{
+          run_fingerprint: run_fingerprint,
+          merge_request_url: merge_request_url,
+          source_branch: source_branch,
+          status_class: "mr-linked"
+        }
+      )
+
+    if result == :ok do
+      Audit.emit("mr_link_comment.written", %{
+        issue_iid: issue_iid,
         run_fingerprint: run_fingerprint,
         merge_request_url: merge_request_url,
-        source_branch: source_branch,
-        status_class: "mr-linked"
-      }
-    )
+        source_branch: source_branch
+      })
+    end
+
+    result
   end
 
   @spec write_ci_failure_comment(String.t(), String.t(), String.t(), String.t()) ::
@@ -188,6 +200,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
         {:ok, selected_pipeline} ->
           with {:ok, observation} <- build_ci_observation(issue_iid, stage4_snapshot, selected_pipeline),
                observation_map = stringify_map(Map.from_struct(observation)),
+               :ok <- emit_ci_observed_audit(observation_map),
                :ok <- StateStore.record_ci_observation(issue_iid, observation_map),
                :ok <- write_ci_status_comment(issue_iid, observation),
                :ok <-
@@ -227,16 +240,30 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
           persist_dry_run_plan(issue_iid, canonical_workspace, plan)
 
         {:manifest, manifest} ->
-          with {:ok, normalized_manifest} <- validate_manifest(manifest),
-               {:ok, collected} <- collect_artifacts(canonical_workspace, normalized_manifest, opts),
-               {:ok, plan} <- build_plan(issue, run_fingerprint, normalized_manifest, collected, opts),
-               :ok <- ensure_digest_compatibility(issue_iid, issue_run_stage4, plan),
-               :ok <- persist_dry_run_plan(issue_iid, canonical_workspace, plan) do
-            if plan.no_op do
-              {:ok, {:noop, plan}}
-            else
-              {:ok, {:planned, plan}}
+          Audit.emit("artifact_manifest.loaded", %{issue_iid: issue_iid, manifest_version: manifest["version"]})
+
+          result =
+            with {:ok, normalized_manifest} <- validate_manifest(manifest),
+                 {:ok, collected} <- collect_artifacts(canonical_workspace, normalized_manifest, opts),
+                 {:ok, plan} <- build_plan(issue, run_fingerprint, normalized_manifest, collected, opts),
+                 :ok <- ensure_digest_compatibility(issue_iid, issue_run_stage4, plan),
+                 {:ok, {_plan_status, ^plan}} <- persist_dry_run_plan(issue_iid, canonical_workspace, plan),
+                 :ok <- Audit.update_trace(issue_iid, %{run_fingerprint: plan.run_fingerprint}),
+                 :ok <- emit_plan_audit(plan) do
+              if plan.no_op do
+                {:ok, {:noop, plan}}
+              else
+                {:ok, {:planned, plan}}
+              end
             end
+
+          case result do
+            {:error, reason} = error ->
+              Audit.emit("artifact_manifest.rejected", %{issue_iid: issue_iid, reason: inspect(reason)}, level: :warning)
+              error
+
+            other ->
+              other
           end
       end
     end
@@ -251,6 +278,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
 
       {:disabled, reason} ->
         Logger.info("Stage 4 live mutation disabled issue_id=#{issue.id} reason=#{inspect(reason)}")
+        Audit.emit("live_mutation.blocked", %{issue_iid: issue.id, reason: inspect(reason)})
         {:ok, {:planned, plan}}
 
       {:error, reason} ->
@@ -262,6 +290,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
             live_mutation_guard_reason: inspect(reason)
           })
 
+        Audit.emit("live_mutation.blocked", %{issue_iid: issue.id, reason: inspect(reason)}, level: :warning)
         {:error, reason}
     end
   end
@@ -296,6 +325,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
          :ok <- record_live_execution_start(issue_iid, plan),
          :ok <- reconcile_remote_mutation_state(issue_iid, plan),
          :ok <- Adapter.create_branch_once(issue_iid, plan.run_fingerprint, plan.source_branch, plan.target_branch),
+         :ok <- emit_branch_audit(issue_iid),
          :ok <-
            Adapter.create_commit_once(
              issue_iid,
@@ -306,6 +336,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
              manifest_digest: plan.manifest_digest,
              action_digest: plan.action_digest
            ),
+         :ok <- emit_commit_audit(issue_iid),
          :ok <-
            Adapter.create_merge_request_once(
              issue_iid,
@@ -315,6 +346,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
              plan.merge_request_title,
              plan.merge_request_description
            ),
+         :ok <- emit_merge_request_audit(issue_iid),
          {:ok, stage4_snapshot} <- fetch_stage4_snapshot(issue_iid),
          merge_request_url when is_binary(merge_request_url) <-
            Map.get(stage4_snapshot, "merge_request_url") || {:error, :missing_merge_request_url},
@@ -337,6 +369,8 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
       {:ok, {:executed, plan, updated_stage4_snapshot}}
     else
       {:error, reason} = error ->
+        Audit.emit("error.recorded", %{issue_iid: issue_iid, reason: inspect(reason)}, level: :warning)
+
         _ =
           StateStore.record_issue_run_snapshot(issue_iid, %{
             stage4_status: "live-mutation-error",
@@ -424,9 +458,16 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
        when is_binary(issue_iid) and is_map(plan) and is_map(merge_request) do
     cond do
       not is_map(source_branch) ->
+        Audit.emit("branch.rejected", %{issue_iid: issue_iid, source_branch: plan.source_branch, reason: "missing_source_branch"}, level: :warning)
         {:error, {:remote_merge_request_missing_source_branch, issue_iid, plan.source_branch}}
 
       Map.get(merge_request, "target_branch") != plan.target_branch ->
+        Audit.emit(
+          "mr.rejected",
+          %{issue_iid: issue_iid, source_branch: plan.source_branch, expected_target_branch: plan.target_branch, existing_target_branch: Map.get(merge_request, "target_branch")},
+          level: :warning
+        )
+
         {:error,
          {:unexpected_existing_merge_request_target_branch, issue_iid,
           %{
@@ -437,6 +478,8 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
           }}}
 
       Map.get(merge_request, "title") != plan.merge_request_title ->
+        Audit.emit("mr.rejected", %{issue_iid: issue_iid, source_branch: plan.source_branch, reason: "title_mismatch"}, level: :warning)
+
         {:error,
          {:remote_merge_request_provenance_mismatch, issue_iid,
           %{
@@ -447,6 +490,8 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
 
       normalize_multiline(Map.get(merge_request, "description")) !=
           normalize_multiline(plan.merge_request_description) ->
+        Audit.emit("mr.rejected", %{issue_iid: issue_iid, source_branch: plan.source_branch, reason: "description_mismatch"}, level: :warning)
+
         {:error,
          {:remote_merge_request_provenance_mismatch, issue_iid,
           %{
@@ -458,7 +503,10 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
       true ->
         with :ok <- record_recovered_branch(issue_iid, plan, source_branch),
              :ok <- record_recovered_commit(issue_iid, plan, source_branch),
-             :ok <- record_recovered_merge_request(issue_iid, plan, merge_request) do
+             :ok <- record_recovered_merge_request(issue_iid, plan, merge_request),
+             :ok <- emit_branch_audit(issue_iid),
+             :ok <- emit_commit_audit(issue_iid),
+             :ok <- emit_merge_request_audit(issue_iid) do
           :ok
         end
     end
@@ -468,15 +516,22 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
        when is_binary(issue_iid) and is_map(plan) and is_map(source_branch) do
     cond do
       branch_matches_target_head?(source_branch, target_branch) ->
-        record_recovered_branch(issue_iid, plan, source_branch)
+        with :ok <- record_recovered_branch(issue_iid, plan, source_branch),
+             :ok <- emit_branch_audit(issue_iid) do
+          :ok
+        end
 
       branch_matches_expected_commit?(source_branch, plan) ->
         with :ok <- record_recovered_branch(issue_iid, plan, source_branch),
-             :ok <- record_recovered_commit(issue_iid, plan, source_branch) do
+             :ok <- record_recovered_commit(issue_iid, plan, source_branch),
+             :ok <- emit_branch_audit(issue_iid),
+             :ok <- emit_commit_audit(issue_iid) do
           :ok
         end
 
       true ->
+        Audit.emit("branch.rejected", %{issue_iid: issue_iid, source_branch: plan.source_branch, reason: "provenance_mismatch"}, level: :warning)
+
         {:error,
          {:remote_branch_provenance_mismatch, issue_iid,
           %{
@@ -647,21 +702,34 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
       "Symphony observed CI status `#{observation.pipeline_status}` for merge request " <>
         "#{observation.merge_request_url} on pipeline `#{observation.pipeline_id}`."
 
-    Adapter.create_comment_once(
-      issue_iid,
-      "mr:#{observation.merge_request_iid}:pipeline:#{observation.pipeline_id}:#{observation.status_class}",
-      body,
-      %{
-        run_fingerprint: observation.run_fingerprint,
+    result =
+      Adapter.create_comment_once(
+        issue_iid,
+        "mr:#{observation.merge_request_iid}:pipeline:#{observation.pipeline_id}:#{observation.status_class}",
+        body,
+        %{
+          run_fingerprint: observation.run_fingerprint,
+          merge_request_iid: observation.merge_request_iid,
+          merge_request_url: observation.merge_request_url,
+          pipeline_id: observation.pipeline_id,
+          pipeline_status: observation.pipeline_status,
+          status_class: observation.status_class,
+          ci_observed_at: observation.ci_observed_at,
+          last_writeback_status_class: observation.status_class
+        }
+      )
+
+    if result == :ok do
+      Audit.emit("ci_comment.written", %{
+        issue_iid: issue_iid,
         merge_request_iid: observation.merge_request_iid,
-        merge_request_url: observation.merge_request_url,
         pipeline_id: observation.pipeline_id,
         pipeline_status: observation.pipeline_status,
-        status_class: observation.status_class,
-        ci_observed_at: observation.ci_observed_at,
-        last_writeback_status_class: observation.status_class
-      }
-    )
+        status_class: observation.status_class
+      })
+    end
+
+    result
   end
 
   defp normalize_pipeline_status(status) when is_binary(status) do
@@ -1044,6 +1112,82 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
 
   defp normalize_multiline(nil), do: nil
   defp normalize_multiline(value) when is_binary(value), do: value |> String.replace("\r\n", "\n") |> String.trim()
+
+  defp emit_plan_audit(plan) when is_map(plan) do
+    :ok = ensure_trace_context(plan.issue_iid, plan.run_fingerprint)
+
+    Audit.emit("mr_plan.created", %{
+      issue_iid: plan.issue_iid,
+      run_fingerprint: plan.run_fingerprint,
+      source_branch: plan.source_branch,
+      target_branch: plan.target_branch,
+      manifest_digest: plan.manifest_digest,
+      action_digest: plan.action_digest,
+      no_op: plan.no_op
+    })
+  end
+
+  defp ensure_trace_context(issue_iid, run_fingerprint)
+       when is_binary(issue_iid) and is_binary(run_fingerprint) do
+    case Audit.context(issue_iid) do
+      %{"trace_id" => trace_id, "run_id" => run_id}
+      when is_binary(trace_id) and trace_id != "" and is_binary(run_id) and run_id != "" ->
+        :ok
+
+      _ ->
+        with {:ok, _context} <-
+               Audit.start_trace(issue_iid, "stage4:#{run_fingerprint}", %{run_fingerprint: run_fingerprint, source: "gitlab"}) do
+          :ok
+        else
+          {:error, _reason} -> :ok
+        end
+    end
+  end
+
+  defp emit_ci_observed_audit(observation_map) when is_map(observation_map) do
+    Audit.emit("ci_pipeline.observed", observation_map)
+  end
+
+  defp emit_branch_audit(issue_iid) when is_binary(issue_iid) do
+    with {:ok, snapshot} <- fetch_stage4_snapshot(issue_iid) do
+      status = Map.get(snapshot, "branch_status") || "created"
+
+      Audit.emit("branch.#{status}", %{
+        issue_iid: issue_iid,
+        run_fingerprint: Map.get(snapshot, "run_fingerprint"),
+        source_branch: Map.get(snapshot, "branch_name"),
+        target_ref: Map.get(snapshot, "target_ref")
+      })
+    end
+  end
+
+  defp emit_commit_audit(issue_iid) when is_binary(issue_iid) do
+    with {:ok, snapshot} <- fetch_stage4_snapshot(issue_iid) do
+      status = Map.get(snapshot, "commit_status") || "created"
+
+      Audit.emit("commit.#{status}", %{
+        issue_iid: issue_iid,
+        run_fingerprint: Map.get(snapshot, "run_fingerprint"),
+        source_branch: Map.get(snapshot, "branch_name"),
+        commit_sha: Map.get(snapshot, "commit_sha")
+      })
+    end
+  end
+
+  defp emit_merge_request_audit(issue_iid) when is_binary(issue_iid) do
+    with {:ok, snapshot} <- fetch_stage4_snapshot(issue_iid) do
+      status = Map.get(snapshot, "merge_request_status") || "created"
+
+      Audit.emit("mr.#{status}", %{
+        issue_iid: issue_iid,
+        run_fingerprint: Map.get(snapshot, "run_fingerprint"),
+        source_branch: Map.get(snapshot, "source_branch") || Map.get(snapshot, "branch_name"),
+        target_branch: Map.get(snapshot, "target_branch"),
+        merge_request_iid: Map.get(snapshot, "merge_request_iid"),
+        merge_request_url: Map.get(snapshot, "merge_request_url")
+      })
+    end
+  end
 
   defp persist_dry_run_plan(issue_iid, canonical_workspace, plan)
        when is_binary(issue_iid) and is_binary(canonical_workspace) and is_map(plan) do

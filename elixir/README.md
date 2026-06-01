@@ -322,6 +322,34 @@ Stage 4 live staging MR behavior:
   disposable branch, and remove the local Stage 4 state file only while
   Symphony is stopped
 
+Run timeline and audit observability:
+
+- Symphony emits append-only structured GitLab audit events to a local JSONL
+  log derived from `tracker.state_path`.
+- Default audit path:
+  - if `tracker.state_path` is `/var/lib/symphony/gitlab-control-plane-state.json`
+    then the audit log path is
+    `/var/lib/symphony/gitlab-control-plane-state.audit.jsonl`
+- Correlation fields include:
+  - `trace_id`
+  - `run_id`
+  - `issue_iid`
+  - `run_fingerprint`
+- Emitted audit events cover webhook receipt, command parsing, queueing, run
+  start/completion/failure, artifact handling, MR planning, branch/commit/MR
+  create or recover or reject decisions, MR-link writeback, CI observation,
+  CI writeback, duplicate suppression, live-mutation blocking, and error
+  recording.
+- Audit events intentionally omit GitLab API tokens, webhook secrets, raw
+  prompt content, Codex auth files, `.env` values, and full artifact file
+  content.
+- Print a sanitized local timeline with:
+
+```bash
+mix gitlab.timeline --issue 42
+mix gitlab.timeline --trace <trace_id>
+```
+
 `tracker.active_states` controls GitLab polling discovery. Reconciliation also
 recognizes `soc::claimed`, `soc::running`, and `soc::waiting-input` as
 controlled in-progress lifecycle labels, so long-running agents are not
@@ -343,6 +371,8 @@ Known limitations:
   it still depends on deterministic branch names, deterministic commit
   provenance markers, and local single-node state. Multi-node reconciliation is
   out of scope.
+- Stage 4.5 audit observability is local append-only logging, not a durable
+  centralized audit platform or analytics pipeline.
 - Symphony does not currently fetch full commit diffs back from GitLab during
   recovery. Commit-only recovery therefore relies on deterministic Stage 4
   commit provenance markers on the branch head or on a matching open MR.

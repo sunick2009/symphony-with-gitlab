@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.GitLabTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.GitLab.{Adapter, Client, Command, StateStore, Webhook}
+  alias SymphonyElixir.GitLab.{Adapter, Audit, Client, Command, StateStore, Webhook}
 
   defmodule FakeGitLabClient do
     @spec fetch_candidate_issues() :: {:ok, [term()]}
@@ -417,6 +417,15 @@ defmodule SymphonyElixir.GitLabTest do
     assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/soc run"))
     refute_receive {:gitlab_labels, "42", _add, _remove}
     refute_receive {:gitlab_comment, "42", _body}
+
+    event_types =
+      Audit.list_events(issue_iid: "42")
+      |> Enum.map(& &1["event_type"])
+
+    assert "webhook.received" in event_types
+    assert "command.parsed" in event_types
+    assert "issue.queued" in event_types
+    assert "duplicate.suppressed" in event_types
   end
 
   test "webhook replay remains suppressed after state store restart" do
@@ -458,6 +467,34 @@ defmodule SymphonyElixir.GitLabTest do
       assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
       refute_receive {:gitlab_labels, "42", _add, _remove}
     end
+
+    events = Audit.list_events(issue_iid: "42")
+    assert Enum.any?(events, &(&1["event_type"] == "duplicate.suppressed"))
+  end
+
+  test "audit events redact secret-like fields and omit content bodies" do
+    configure_gitlab_webhook_test()
+
+    :ok =
+      Audit.emit("secret.check", %{
+        issue_iid: "42",
+        api_token: "glpat-secret-value",
+        webhook_secret: "top-secret",
+        prompt: "do not keep",
+        artifact_content: "full artifact body",
+        safe_field: "kept"
+      })
+
+    [event] =
+      Audit.list_events(issue_iid: "42")
+      |> Enum.filter(&(&1["event_type"] == "secret.check"))
+
+    details = event["details"]
+    assert details["safe_field"] == "kept"
+    refute Map.has_key?(details, "api_token")
+    refute Map.has_key?(details, "webhook_secret")
+    refute Map.has_key?(details, "prompt")
+    refute Map.has_key?(details, "artifact_content")
   end
 
   test "webhook parses recognized but unimplemented commands without dispatching" do

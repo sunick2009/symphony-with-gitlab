@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.GitLabLifecycleTest do
   use SymphonyElixir.TestSupport
-  alias SymphonyElixir.GitLab.StateStore
+  alias SymphonyElixir.GitLab.{Audit, StateStore}
 
   defmodule FakeGitLabClient do
     @spec fetch_candidate_issues() :: {:ok, [Issue.t()]}
@@ -228,6 +228,8 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
 
       assert_receive {:gitlab_comment, "42", "Symphony agent run failed and moved this issue to `soc::failed`."},
                      1_000
+
+      assert Enum.any?(Audit.list_events(issue_iid: "42"), &(&1["event_type"] == "run.failed"))
     after
       GenServer.stop(pid)
     end

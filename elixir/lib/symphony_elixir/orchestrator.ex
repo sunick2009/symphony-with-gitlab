@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
+  alias SymphonyElixir.GitLab.Audit
   alias SymphonyElixir.GitLab.MRWorkflow
   alias SymphonyElixir.GitLab.StateStore
   alias SymphonyElixir.Linear.Issue
@@ -235,6 +236,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
     Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+    Audit.emit("run.failed", %{issue_iid: issue_id, session_id: session_id, reason: inspect(reason)}, level: :warning)
     maybe_update_gitlab_run_lifecycle(issue_id, "soc::failed")
     maybe_create_gitlab_run_comment(issue_id, "Symphony agent run failed and moved this issue to `soc::failed`.")
 
@@ -951,6 +953,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
+        Audit.emit("error.recorded", %{issue_iid: issue.id, reason: "dispatch refresh failed: #{inspect(reason)}"}, level: :warning)
         state
     end
   end
@@ -976,6 +979,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        Audit.emit("run.started", %{issue_iid: issue.id, attempt: attempt, worker_host: worker_host || "local"})
         maybe_update_gitlab_run_lifecycle(issue.id, "soc::running")
 
         running =
@@ -1011,6 +1015,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+        Audit.emit("run.failed", %{issue_iid: issue.id, reason: "failed to spawn agent: #{inspect(reason)}"}, level: :warning)
         maybe_update_gitlab_run_lifecycle(issue.id, "soc::failed")
         maybe_create_gitlab_run_comment(issue.id, "Symphony could not start an agent run and moved this issue to `soc::failed`.")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
@@ -1045,6 +1050,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp complete_issue(%State{} = state, issue_id, running_entry) do
     maybe_finalize_gitlab_mr_completion(issue_id, running_entry)
+    Audit.emit("run.completed", %{issue_iid: issue_id})
     maybe_update_gitlab_run_lifecycle(issue_id, "soc::human-review")
     maybe_create_gitlab_run_comment(issue_id, "Symphony agent run completed and moved this issue to `soc::human-review`.")
 
@@ -1077,6 +1083,7 @@ defmodule SymphonyElixir.Orchestrator do
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
+    Audit.emit("error.recorded", %{issue_iid: issue_id, retry_attempt: next_attempt, reason: error || "retry_scheduled", delay_ms: delay_ms}, level: :warning)
 
     %{
       state

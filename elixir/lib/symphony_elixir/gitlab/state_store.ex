@@ -55,6 +55,36 @@ defmodule SymphonyElixir.GitLab.StateStore do
     call({:record_issue_run_snapshot, state_path(), issue_iid, attrs})
   end
 
+  @spec record_issue_audit_context(String.t(), map()) :: :ok | {:error, term()}
+  def record_issue_audit_context(issue_iid, attrs) when is_binary(issue_iid) and is_map(attrs) do
+    call({:record_issue_audit_context, state_path(), issue_iid, attrs})
+  end
+
+  @spec fetch_issue_audit_context(String.t()) :: {:ok, map()} | {:error, term()}
+  def fetch_issue_audit_context(issue_iid) when is_binary(issue_iid) do
+    state_path()
+    |> load_state()
+    |> case do
+      {:ok, state} ->
+        {:ok, get_in(state, ["issue_runs", issue_iid, "audit"]) || %{}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec append_audit_event(map()) :: :ok | {:error, term()}
+  def append_audit_event(event) when is_map(event) do
+    append_jsonl(audit_log_path(), event)
+  end
+
+  @spec audit_log_path() :: Path.t()
+  def audit_log_path do
+    state_path()
+    |> Path.rootname()
+    |> Kernel.<>(".audit.jsonl")
+  end
+
   @spec fetch_issue_run_snapshot(String.t()) :: {:ok, map() | nil} | {:error, term()}
   def fetch_issue_run_snapshot(issue_iid) when is_binary(issue_iid) do
     state_path()
@@ -96,7 +126,30 @@ defmodule SymphonyElixir.GitLab.StateStore do
   def reset_for_test do
     path = state_path()
     File.rm(path)
+    File.rm(audit_log_path())
     :ok
+  end
+
+  @doc false
+  @spec read_audit_events_for_test() :: [map()]
+  def read_audit_events_for_test do
+    case File.read(audit_log_path()) do
+      {:ok, contents} ->
+        contents
+        |> String.split("\n", trim: true)
+        |> Enum.map(fn line ->
+          case Jason.decode(line) do
+            {:ok, %{} = event} -> event
+            _ -> %{"decode_error" => line}
+          end
+        end)
+
+      {:error, :enoent} ->
+        []
+
+      {:error, reason} ->
+        raise "failed to read GitLab audit log: #{inspect(reason)}"
+    end
   end
 
   @impl true
@@ -171,6 +224,23 @@ defmodule SymphonyElixir.GitLab.StateStore do
     reply =
       update_state(path, fn stored ->
         {:ok, put_issue_run_snapshot(stored, issue_iid, attrs)}
+      end)
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:record_issue_audit_context, path, issue_iid, attrs}, _from, state) do
+    reply =
+      update_state(path, fn stored ->
+        issue_run = get_in(stored, ["issue_runs", issue_iid]) || %{}
+        audit = Map.get(issue_run, "audit", %{})
+
+        updated_issue_run =
+          issue_run
+          |> Map.put("audit", Map.merge(audit, stringify_keys(attrs)) |> Map.put("updated_at", timestamp()))
+          |> Map.put("updated_at", timestamp())
+
+        {:ok, put_in(stored, ["issue_runs", issue_iid], updated_issue_run)}
       end)
 
     {:reply, reply, state}
@@ -478,6 +548,20 @@ defmodule SymphonyElixir.GitLab.StateStore do
       {:error, reason} ->
         Logger.warning("Failed writing GitLab control-plane state path=#{path}: #{inspect(reason)}")
         {:error, {:gitlab_state_write_failed, path, reason}}
+    end
+  end
+
+  defp append_jsonl(path, payload) when is_map(payload) do
+    dir = Path.dirname(path)
+
+    with :ok <- File.mkdir_p(dir),
+         {:ok, encoded} <- Jason.encode(payload),
+         :ok <- File.write(path, encoded <> "\n", [:append]) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.warning("Failed appending GitLab audit log path=#{path}: #{inspect(reason)}")
+        {:error, {:gitlab_audit_write_failed, path, reason}}
     end
   end
 

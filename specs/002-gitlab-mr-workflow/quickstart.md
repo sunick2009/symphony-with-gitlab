@@ -92,6 +92,12 @@ validation.
    - skipped or unknown, if returned by GitLab
 7. Re-run the same completion path or restart Symphony and verify duplicate suppression.
 8. Record token-boundary evidence that `GITLAB_API_TOKEN` and `GITLAB_WEBHOOK_SECRET` remain absent from the Codex process.
+9. Inspect the local audit timeline for the validated run:
+
+```bash
+cd elixir
+mix gitlab.timeline --issue 42
+```
 
 ## CI Reconciliation Behavior
 
@@ -127,6 +133,31 @@ validation.
 - Issue note excerpts for MR link and CI result
 - Sanitized token-boundary trace
 - Evidence that retries did not create duplicate branches or merge requests
+- Sanitized audit timeline excerpts with correlated `trace_id`, `run_id`,
+  `issue_iid`, and `run_fingerprint`
+
+## Audit Timeline
+
+- Audit events are appended to a local JSONL file derived from
+  `tracker.state_path`.
+- If `tracker.state_path` is `/tmp/symphony-stage4/gitlab-state.json`, the
+  audit log path is `/tmp/symphony-stage4/gitlab-state.audit.jsonl`.
+- Query by issue IID:
+
+```bash
+cd elixir
+mix gitlab.timeline --issue 42
+```
+
+- Query by trace ID:
+
+```bash
+cd elixir
+mix gitlab.timeline --trace <trace_id>
+```
+
+- Audit events do not include GitLab API tokens, webhook secrets, raw prompt
+  content, full artifact contents, Codex auth files, or `.env` values.
 
 ## Known Limitations
 
@@ -139,6 +170,8 @@ validation.
   second MR.
 - Recovery state remains local to the configured `tracker.state_path`. Multi-node
   reconciliation remains out of scope.
+- Audit observability is local-only and staging-oriented. It is not a shared
+  audit backend.
 
 ## Sanitized Staging Evidence
 
