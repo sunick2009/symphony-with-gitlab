@@ -40,8 +40,17 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
 
     @spec post_issue_comment(String.t(), String.t()) :: :ok
     def post_issue_comment(issue_iid, body) do
-      send(test_recipient(), {:gitlab_comment, issue_iid, body})
-      :ok
+      failure_fragment = Application.get_env(:symphony_elixir, :gitlab_lifecycle_fail_comment_substring)
+
+      cond do
+        is_binary(failure_fragment) and String.contains?(body, failure_fragment) ->
+          Application.delete_env(:symphony_elixir, :gitlab_lifecycle_fail_comment_substring)
+          {:error, :simulated_comment_failure}
+
+        true ->
+          send(test_recipient(), {:gitlab_comment, issue_iid, body})
+          :ok
+      end
     end
 
     @spec update_issue_labels(String.t(), [String.t()], [String.t()]) :: :ok
@@ -353,6 +362,41 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     end
   end
 
+  test "live mutation comment writeback failure keeps the issue in human review and records finalization error" do
+    configure_lifecycle_test(DryRunSuccessfulRunner,
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    Application.put_env(:symphony_elixir, :gitlab_lifecycle_fail_comment_substring, "merge request")
+
+    {:ok, pid} = Orchestrator.start_link(name: :"gitlab-lifecycle-link-failure-#{System.unique_integer([:positive])}")
+
+    try do
+      assert_receive {:gitlab_labels, "42", ["soc::running"], _removed}, 1_000
+      assert_receive {:agent_run, "42", recipient} when is_pid(recipient)
+      assert_receive {:gitlab_live_branch_fetch, branch_name}, 1_000
+      assert branch_name =~ "soc/issue-42/"
+      assert_receive {:gitlab_live_branch_create, ^branch_name, "main"}, 1_000
+      assert_receive {:gitlab_live_commit_create, ^branch_name, _message, _actions}, 1_000
+      assert_receive {:gitlab_live_mr_fetch, ^branch_name, "main"}, 1_000
+      assert_receive {:gitlab_live_mr_create, ^branch_name, "main", _title, _description}, 1_000
+      assert_receive {:gitlab_labels, "42", ["soc::human-review"], _removed}, 1_000
+
+      assert_receive {:gitlab_comment, "42", "Symphony agent run completed and moved this issue to `soc::human-review`."},
+                     1_000
+
+      refute_receive {:gitlab_comment, "42", _}, 300
+
+      stage4 = StateStore.read_for_test()["issue_runs"]["42"]["stage4"]
+      assert stage4["stage4_status"] == "finalization-error"
+      assert stage4["stage4_error"] =~ "simulated_comment_failure"
+      assert stage4["merge_request_url"] =~ "/merge_requests/"
+    after
+      GenServer.stop(pid)
+    end
+  end
+
   defp configure_lifecycle_test(agent_runner_module, opts \\ []) do
     write_workflow_file!(
       Workflow.workflow_file_path(),
@@ -378,6 +422,7 @@ defmodule SymphonyElixir.GitLabLifecycleTest do
     Application.put_env(:symphony_elixir, :gitlab_test_recipient, self())
     Application.put_env(:symphony_elixir, :gitlab_lifecycle_issue_state, "soc::queued")
     Application.put_env(:symphony_elixir, :gitlab_lifecycle_pipelines, %{})
+    Application.delete_env(:symphony_elixir, :gitlab_lifecycle_fail_comment_substring)
     StateStore.reset_for_test()
   end
 end

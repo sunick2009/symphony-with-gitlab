@@ -34,6 +34,10 @@ GitLab issue or comment
   Tracked reproducible Spec Kit assets, excluded local-only files, validated a
   real local Codex app-server, and fixed long-running GitLab lifecycle
   reconciliation.
+- **Stage 4: GitLab merge request workflow milestone.** Added adapter-owned
+  dry-run planning, staging-gated live branch/commit/MR creation, idempotent
+  MR-link writeback, CI reconciliation, disposable CI success/failure staging
+  validation, and restart-safe recovery for partial remote success.
 
 ## Current Verified Capabilities
 
@@ -58,6 +62,9 @@ GitLab issue or comment
 - Stage 4.3.1 disposable CI validation with real staging success and failure
   pipelines, idempotent CI comments, open-MR preservation, and preserved token
   boundaries.
+- Stage 4.4 restart hardening for remote branch, commit, MR, and MR-link
+  partial-failure recovery with deterministic provenance checks and mismatch
+  blocking.
 
 ## Important Implementation Boundaries
 
@@ -92,12 +99,14 @@ GitLab issue or comment
 
 ## Current Validation Status
 
-The most recent Stage 3.5 work passed the full Elixir validation path,
-including formatting, the full test suite, specs checks, Credo, enforced
-coverage, Dialyzer, diff checks, clean-room searches, and sanitized live
-staging assertions. See
+The completed GitLab integration milestone passed the full Elixir validation
+path, including formatting, targeted GitLab tests, the full test suite, specs
+checks, diff checks, clean-room searches, and sanitized live staging
+assertions. See
 [`specs/001-gitlab-control-plane/live-staging-validation.md`](specs/001-gitlab-control-plane/live-staging-validation.md)
-for staging-validated behavior and limitations.
+and
+[`specs/002-gitlab-mr-workflow/milestone-closure.md`](specs/002-gitlab-mr-workflow/milestone-closure.md)
+for staging evidence, milestone scope, and remaining non-production limits.
 
 ## Files and Areas Future Agents Should Read First
 
@@ -113,15 +122,15 @@ for staging-validated behavior and limitations.
 
 ## Next Recommended Stage
 
-Stage 4.4 should harden restart-safe reconciliation for partial remote success,
-local state loss, and safe remote reuse across retries and restarts.
+The GitLab integration milestone is complete for staging-only scope. Any future
+work should begin from explicit production-readiness requirements rather than
+expanding Stage 4 behavior implicitly.
 
-Stage 4 must continue to preserve adapter-owned GitLab mutation. Codex may
-generate patch or artifact content, but adapter-controlled code must keep
-branch, commit, merge request, and CI writeback operations outside the Codex
-agent process.
+Adapter-owned GitLab mutation remains mandatory. Codex may generate patch or
+artifact content, but adapter-controlled code must keep branch, commit, merge
+request, and CI writeback operations outside the Codex agent process.
 
-## Explicit Non-Goals Until Stage 4 Is Complete
+## Explicit Non-Goals After Milestone Closure
 
 - No Cortex integration.
 - No IOC enrichment.
@@ -131,11 +140,11 @@ agent process.
 - No production GitLab project integration.
 - No multi-node production deployment.
 
-## Recommended Stage 4 Preflight Questions
+## Recommended Post-Milestone Questions
 
 1. Should CI reconciliation remain polling-based, or is a webhook-assisted path
-   required before broader staging rollout?
-2. What additional staging CI fixtures are required to exercise success,
-   failure, canceled, and skipped pipelines end to end?
-3. When should issue lifecycle movement beyond `soc::human-review` be specified
-   for post-review stages, if at all?
+   required before any broader rollout?
+2. What shared state design is required before any multi-node or
+   production-like deployment?
+3. What additional remote-worker token-boundary validation is required before
+   trusting non-local runners?

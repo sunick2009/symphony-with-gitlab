@@ -46,7 +46,6 @@
 
 ### Tests for User Story 1
 
-- [ ] T009 [P] [US1] Add Stage 4 branch naming and artifact collection tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [x] T009 [P] [US1] Add Stage 4 branch naming and artifact collection tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [x] T010 [P] [US1] Add successful branch, commit, MR creation tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [x] T011 [US1] Add orchestrator completion coverage for Stage 4 handoff in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
@@ -77,7 +76,6 @@
 
 ### Implementation for User Story 2
 
-- [ ] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
 - [x] T020 [P] [US2] Implement MR pipeline fetch and normalization helpers in `elixir/lib/symphony_elixir/gitlab/client.ex`
 - [x] T021 [US2] Implement Stage 4 CI observation persistence and status-class dedupe in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
 - [x] T022 [US2] Implement CI success and failure issue writeback flow in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
@@ -97,14 +95,14 @@
 
 - [x] T024 [P] [US3] Add branch reuse and duplicate MR suppression tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [x] T025 [P] [US3] Add restart-safe repository mutation resume tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-- [ ] T026 [US3] Add partial writeback recovery coverage in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
+- [x] T026 [US3] Add partial writeback recovery coverage in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 3
 
 - [x] T027 [P] [US3] Extend persistent writeback keys for Stage 4 branch, commit, MR, and CI operations in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
 - [x] T028 [US3] Implement repository mutation lookup and provenance validation in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [x] T029 [US3] Implement resume-from-first-incomplete-step logic in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-- [ ] T030 [US3] Extend adapter retry and exhausted-failure audit behavior for Stage 4 writeback in `elixir/lib/symphony_elixir/gitlab/client.ex`
+- [x] T030 [US3] Extend adapter retry and exhausted-failure audit behavior for Stage 4 writeback in `elixir/lib/symphony_elixir/gitlab/client.ex`
 
 **Checkpoint**: Stage 4 repository mutation is restart-safe and duplicate-resistant.
 
