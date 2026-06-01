@@ -183,6 +183,88 @@ defmodule SymphonyElixir.GitLab.Adapter do
     )
   end
 
+  @spec record_existing_branch_once(String.t(), String.t(), String.t(), String.t(), map()) ::
+          :ok | {:error, term()}
+  def record_existing_branch_once(issue_id, run_fingerprint, branch_name, ref, metadata \\ %{})
+      when is_binary(issue_id) and is_binary(run_fingerprint) and is_binary(branch_name) and
+             is_binary(ref) and is_map(metadata) do
+    operation_key = writeback_key(issue_id, "branch", run_fingerprint)
+
+    StateStore.writeback_once(
+      operation_key,
+      %{
+        operation: "branch",
+        issue_iid: issue_id,
+        run_fingerprint: run_fingerprint,
+        branch_name: branch_name,
+        target_ref: ref
+      },
+      fn ->
+        {:ok, Map.merge(%{"branch_status" => "recovered"}, metadata)}
+      end
+    )
+  end
+
+  @spec record_existing_commit_once(String.t(), String.t(), String.t(), String.t(), keyword(), map()) ::
+          :ok | {:error, term()}
+  def record_existing_commit_once(issue_id, run_fingerprint, branch_name, message, opts \\ [], metadata \\ %{})
+      when is_binary(issue_id) and is_binary(run_fingerprint) and is_binary(branch_name) and
+             is_binary(message) and is_list(opts) and is_map(metadata) do
+    operation_key = writeback_key(issue_id, "commit", run_fingerprint)
+
+    StateStore.writeback_once(
+      operation_key,
+      %{
+        operation: "commit",
+        issue_iid: issue_id,
+        run_fingerprint: run_fingerprint,
+        manifest_digest: Keyword.get(opts, :manifest_digest),
+        action_digest: Keyword.get(opts, :action_digest),
+        branch_name: branch_name,
+        commit_message: message
+      },
+      fn ->
+        {:ok, Map.merge(%{"commit_status" => "recovered"}, metadata)}
+      end
+    )
+  end
+
+  @spec record_existing_merge_request_once(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map()
+        ) :: :ok | {:error, term()}
+  def record_existing_merge_request_once(
+        issue_id,
+        run_fingerprint,
+        source_branch,
+        target_branch,
+        title,
+        metadata
+      )
+      when is_binary(issue_id) and is_binary(run_fingerprint) and is_binary(source_branch) and
+             is_binary(target_branch) and is_binary(title) and is_map(metadata) do
+    operation_key = writeback_key(issue_id, "merge-request", run_fingerprint)
+
+    StateStore.writeback_once(
+      operation_key,
+      %{
+        operation: "merge_request",
+        issue_iid: issue_id,
+        run_fingerprint: run_fingerprint,
+        source_branch: source_branch,
+        target_branch: target_branch,
+        title: title
+      },
+      fn ->
+        {:ok, Map.merge(%{"merge_request_status" => "recovered"}, metadata)}
+      end
+    )
+  end
+
   @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]} | {:error, term()}
   def fetch_merge_request_pipelines(merge_request_iid) when is_binary(merge_request_iid) do
     client_module().fetch_merge_request_pipelines(merge_request_iid)

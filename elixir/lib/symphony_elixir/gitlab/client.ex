@@ -506,7 +506,9 @@ defmodule SymphonyElixir.GitLab.Client do
       "protected" => payload["protected"],
       "default" => payload["default"],
       "web_url" => payload["web_url"],
-      "commit_id" => get_in(payload, ["commit", "id"])
+      "commit_id" => get_in(payload, ["commit", "id"]),
+      "commit_title" => get_in(payload, ["commit", "title"]),
+      "commit_message" => get_in(payload, ["commit", "message"])
     }
   end
 

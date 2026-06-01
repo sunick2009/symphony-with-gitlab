@@ -35,6 +35,14 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
       }
 
       put_in_remote_state([:commits, branch_name], commit)
+
+      update_remote_branch(branch_name, fn branch ->
+        (branch || %{"branch_name" => branch_name, "name" => branch_name})
+        |> Map.put("commit_id", commit_sha)
+        |> Map.put("commit_title", message)
+        |> Map.put("commit_message", message)
+      end)
+
       send(test_recipient(), {:gitlab_commit_created, branch_name, message, actions, opts})
       {:ok, commit}
     end
@@ -77,8 +85,44 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
 
     @spec post_issue_comment(String.t(), String.t()) :: :ok
     def post_issue_comment(issue_iid, body) when is_binary(issue_iid) and is_binary(body) do
-      send(test_recipient(), {:gitlab_comment, issue_iid, body})
-      :ok
+      case consume_comment_failure(body) do
+        :fail ->
+          {:error, :simulated_comment_failure}
+
+        :ok ->
+          send(test_recipient(), {:gitlab_comment, issue_iid, body})
+          :ok
+      end
+    end
+
+    defp consume_comment_failure(body) do
+      pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
+
+      Agent.get_and_update(pid, fn state ->
+        failures = Map.get(state, :comment_failures, [])
+
+        case Enum.split_with(failures, &String.contains?(body, &1)) do
+          {[matched | remaining_matches], remaining_failures} ->
+            updated_state =
+              state
+              |> Map.put(:comment_failures, remaining_matches ++ remaining_failures)
+              |> Map.put(:last_failed_comment, matched)
+
+            {:fail, updated_state}
+
+          {[], _remaining_failures} ->
+            {:ok, state}
+        end
+      end)
+    end
+
+    defp update_remote_branch(branch_name, fun) when is_binary(branch_name) and is_function(fun, 1) do
+      pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
+
+      Agent.update(pid, fn state ->
+        current_branch = get_in(state, [:branches, branch_name])
+        put_in(state, [:branches, branch_name], fun.(current_branch))
+      end)
     end
 
     @spec fetch_merge_request_pipelines(String.t()) :: {:ok, [map()]}
@@ -678,6 +722,7 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
     assert stage4_snapshot["stage4_status"] == "live-mr-created"
     assert stage4_snapshot["merge_request_url"] =~ "/merge_requests/"
     assert stage4_snapshot["commit_sha"] =~ "sha-"
+    assert stage4_snapshot["commit_message"] =~ "[stage4:"
   end
 
   test "live mutation guard blocks non-allowlisted projects" do
@@ -755,12 +800,220 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
              MRWorkflow.finalize_issue_completion(issue, workspace, [])
 
     refute_receive {:gitlab_branch_created, ^source_branch, "main"}
-    assert_receive {:gitlab_commit_created, ^source_branch, _, _, opts}
-    refute Keyword.has_key?(opts, :start_branch)
+    refute_receive {:gitlab_commit_created, ^source_branch, _, _, _}
     refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
     assert_receive {:gitlab_comment, "42", body}
     assert body =~ "/merge_requests/88"
     assert stage4_snapshot["merge_request_iid"] == "88"
+    assert stage4_snapshot["merge_request_status"] == "recovered"
+  end
+
+  test "live mutation recovers when the branch already exists remotely but local state is missing" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_branch_resume.ex", "out/live_branch_resume.ex", "defmodule LiveBranchResume do\nend\n")
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, "main"], %{
+      "branch_name" => "main",
+      "name" => "main",
+      "commit_id" => "base-main"
+    })
+
+    remote_put([:branches, plan.source_branch], %{
+      "branch_name" => plan.source_branch,
+      "name" => plan.source_branch,
+      "commit_id" => "base-main"
+    })
+
+    StateStore.reset_for_test()
+
+    assert {:ok, {:executed, _returned_plan, snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, ^source_branch, "main"}
+    assert_receive {:gitlab_commit_created, ^source_branch, message, _actions, _opts}
+    assert message =~ "[stage4:"
+    assert_receive {:gitlab_merge_request_created, ^source_branch, "main", _title}
+    assert snapshot["branch_status"] == "recovered"
+  end
+
+  test "live mutation recovers when the commit already exists remotely but local state is missing" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_commit_resume.ex", "out/live_commit_resume.ex", "defmodule LiveCommitResume do\nend\n")
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, source_branch], %{
+      "branch_name" => source_branch,
+      "name" => source_branch,
+      "commit_id" => "sha-recovered-commit",
+      "commit_title" => plan.commit_message,
+      "commit_message" => plan.commit_message
+    })
+
+    StateStore.reset_for_test()
+
+    assert {:ok, {:executed, _returned_plan, snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, ^source_branch, "main"}
+    refute_receive {:gitlab_commit_created, ^source_branch, _, _, _}
+    assert_receive {:gitlab_merge_request_created, ^source_branch, "main", _title}
+    assert snapshot["commit_status"] == "recovered"
+    assert snapshot["commit_sha"] == "sha-recovered-commit"
+  end
+
+  test "live mutation recovers when the merge request already exists remotely but local state is missing" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_mr_resume.ex", "out/live_mr_resume.ex", "defmodule LiveMrResume do\nend\n")
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, source_branch], %{
+      "branch_name" => source_branch,
+      "name" => source_branch,
+      "commit_id" => "sha-recovered-mr"
+    })
+
+    remote_put([:merge_requests, "71"], %{
+      "merge_request_iid" => "71",
+      "merge_request_url" => "https://gitlab.example.com/group/project/-/merge_requests/71",
+      "source_branch" => source_branch,
+      "target_branch" => "main",
+      "title" => plan.merge_request_title,
+      "description" => plan.merge_request_description,
+      "state" => "opened"
+    })
+
+    StateStore.reset_for_test()
+
+    assert {:ok, {:executed, _returned_plan, snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, ^source_branch, "main"}
+    refute_receive {:gitlab_commit_created, ^source_branch, _, _, _}
+    refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "/merge_requests/71"
+    assert snapshot["merge_request_iid"] == "71"
+    assert snapshot["merge_request_status"] == "recovered"
+  end
+
+  test "live mutation retries only the mr link comment when mr creation succeeded remotely but comment writeback failed" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_link_retry.ex", "out/live_link_retry.ex", "defmodule LiveLinkRetry do\nend\n")
+    remote_fail_comment_once!("merge request")
+
+    assert {:error, :simulated_comment_failure} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    assert_receive {:gitlab_branch_created, branch_name, "main"}
+    assert_receive {:gitlab_commit_created, ^branch_name, _, _, _}
+    assert_receive {:gitlab_merge_request_created, ^branch_name, "main", _}
+    refute_receive {:gitlab_comment, "42", _}
+
+    assert {:ok, {:executed, _plan, snapshot}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    refute_receive {:gitlab_branch_created, ^branch_name, "main"}
+    refute_receive {:gitlab_commit_created, ^branch_name, _, _, _}
+    refute_receive {:gitlab_merge_request_created, ^branch_name, "main", _}
+    assert_receive {:gitlab_comment, "42", body}
+    assert body =~ "merge request"
+    assert snapshot["merge_request_url"] =~ "/merge_requests/"
+  end
+
+  test "live mutation blocks remote provenance mismatches on an existing deterministic branch" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_mismatch.ex", "out/live_mismatch.ex", "defmodule LiveMismatch do\nend\n")
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, source_branch], %{
+      "branch_name" => source_branch,
+      "name" => source_branch,
+      "commit_id" => "sha-unexpected",
+      "commit_title" => "manual branch update",
+      "commit_message" => "manual branch update"
+    })
+
+    assert {:error, {:remote_branch_provenance_mismatch, "42", details}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    assert details[:source_branch] == source_branch
+    refute_receive {:gitlab_commit_created, ^source_branch, _, _, _}
+    refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
+  end
+
+  test "live mutation blocks an existing open merge request with an unexpected target branch" do
+    configure_mr_workflow_test(
+      tracker_stage4_live_mutation: true,
+      tracker_stage4_allowed_project_slugs: ["group/project"]
+    )
+
+    workspace = create_workspace_fixture!()
+    issue = %Issue{id: "42", identifier: "#42", title: "Generated update", state: "soc::running"}
+    write_simple_manifest!(workspace, "elixir/lib/live_wrong_target.ex", "out/live_wrong_target.ex", "defmodule LiveWrongTarget do\nend\n")
+
+    assert {:ok, {:planned, plan}} = MRWorkflow.finalize_dry_run(issue, workspace, [])
+    source_branch = plan.source_branch
+
+    remote_put([:branches, source_branch], %{
+      "branch_name" => source_branch,
+      "name" => source_branch,
+      "commit_id" => "sha-existing"
+    })
+
+    remote_put([:merge_requests, "91"], %{
+      "merge_request_iid" => "91",
+      "merge_request_url" => "https://gitlab.example.com/group/project/-/merge_requests/91",
+      "source_branch" => source_branch,
+      "target_branch" => "release",
+      "title" => plan.merge_request_title,
+      "description" => plan.merge_request_description,
+      "state" => "opened"
+    })
+
+    assert {:error, {:unexpected_existing_merge_request_target_branch, "42", details}} =
+             MRWorkflow.finalize_issue_completion(issue, workspace, [])
+
+    assert details[:existing_target_branch] == "release"
+    refute_receive {:gitlab_merge_request_created, ^source_branch, "main", _}
   end
 
   test "live mutation blocks changed digest retries for the same run fingerprint" do
@@ -1005,7 +1258,8 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
           branches: %{},
           commits: %{},
           merge_requests: %{},
-          pipelines: %{}
+          pipelines: %{},
+          comment_failures: []
         }
       end)
 
@@ -1026,6 +1280,11 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
   defp remote_put(path, value) do
     pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
     Agent.update(pid, &Kernel.put_in(&1, path, value))
+  end
+
+  defp remote_fail_comment_once!(fragment) when is_binary(fragment) do
+    pid = Application.fetch_env!(:symphony_elixir, :gitlab_mr_remote_state)
+    Agent.update(pid, &Map.update(&1, :comment_failures, [fragment], fn failures -> failures ++ [fragment] end))
   end
 
   defp seed_merge_request_snapshot!(issue_iid, run_fingerprint, merge_request_iid) do
@@ -1057,6 +1316,21 @@ defmodule SymphonyElixir.GitLabMRWorkflowTest do
 
   defp write_manifest!(workspace, manifest) do
     write_workspace_file!(workspace, MRWorkflow.manifest_relpath(), Jason.encode!(manifest))
+  end
+
+  defp write_simple_manifest!(workspace, repository_path, workspace_source_path, contents) do
+    write_manifest!(workspace, %{
+      "version" => 1,
+      "artifacts" => [
+        %{
+          "repository_path" => repository_path,
+          "workspace_source_path" => workspace_source_path,
+          "action" => "create"
+        }
+      ]
+    })
+
+    write_workspace_file!(workspace, workspace_source_path, contents)
   end
 
   defp write_workspace_file!(workspace, relpath, contents) do

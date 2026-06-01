@@ -116,6 +116,8 @@ validation.
 - Issue URL
 - Source branch name
 - Expected branch pattern: `soc/issue-<iid>/<run-fingerprint>`
+- Expected commit message prefix: `chore(gitlab): update issue #<iid> artifacts`
+- Expected commit provenance marker: `[stage4:<run-fingerprint>:<action-digest-prefix>]`
 - Commit SHA
 - MR URL and IID
 - Expected MR title: `Issue #<iid>: <issue title>`
@@ -129,8 +131,14 @@ validation.
 ## Known Limitations
 
 - CI reconciliation is polling-based rather than webhook-driven.
-- If the disposable staging project has no CI configuration, the live
-  validation path can only prove the no-pipeline reconciliation case.
+- Partial remote-success recovery is limited to deterministic Stage 4
+  provenance. Commit-only recovery relies on the expected commit provenance
+  marker on the source branch head, or on a matching open MR.
+- If an existing open MR for the deterministic source branch points to an
+  unexpected target branch, Symphony blocks live mutation instead of creating a
+  second MR.
+- Recovery state remains local to the configured `tracker.state_path`. Multi-node
+  reconciliation remains out of scope.
 
 ## Sanitized Staging Evidence
 

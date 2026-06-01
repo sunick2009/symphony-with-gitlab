@@ -294,6 +294,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
        when is_binary(issue_iid) and is_map(plan) and is_list(opts) do
     with :ok <- validate_live_provenance(issue_iid, plan),
          :ok <- record_live_execution_start(issue_iid, plan),
+         :ok <- reconcile_remote_mutation_state(issue_iid, plan),
          :ok <- Adapter.create_branch_once(issue_iid, plan.run_fingerprint, plan.source_branch, plan.target_branch),
          :ok <-
            Adapter.create_commit_once(
@@ -399,6 +400,168 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
       merge_request_title: plan.merge_request_title,
       no_op: plan.no_op
     })
+  end
+
+  defp reconcile_remote_mutation_state(issue_iid, plan)
+       when is_binary(issue_iid) and is_map(plan) do
+    with {:ok, source_branch} <- Adapter.fetch_branch(plan.source_branch),
+         {:ok, target_branch} <- Adapter.fetch_branch(plan.target_branch),
+         {:ok, merge_request} <- Adapter.fetch_open_merge_request(plan.source_branch, nil) do
+      cond do
+        is_map(merge_request) ->
+          reconcile_remote_merge_request(issue_iid, plan, source_branch, merge_request)
+
+        is_map(source_branch) ->
+          reconcile_remote_branch(issue_iid, plan, source_branch, target_branch)
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp reconcile_remote_merge_request(issue_iid, plan, source_branch, merge_request)
+       when is_binary(issue_iid) and is_map(plan) and is_map(merge_request) do
+    cond do
+      not is_map(source_branch) ->
+        {:error, {:remote_merge_request_missing_source_branch, issue_iid, plan.source_branch}}
+
+      Map.get(merge_request, "target_branch") != plan.target_branch ->
+        {:error,
+         {:unexpected_existing_merge_request_target_branch, issue_iid,
+          %{
+            source_branch: plan.source_branch,
+            expected_target_branch: plan.target_branch,
+            existing_target_branch: Map.get(merge_request, "target_branch"),
+            merge_request_iid: Map.get(merge_request, "merge_request_iid")
+          }}}
+
+      Map.get(merge_request, "title") != plan.merge_request_title ->
+        {:error,
+         {:remote_merge_request_provenance_mismatch, issue_iid,
+          %{
+            merge_request_iid: Map.get(merge_request, "merge_request_iid"),
+            expected_title: plan.merge_request_title,
+            existing_title: Map.get(merge_request, "title")
+          }}}
+
+      normalize_multiline(Map.get(merge_request, "description")) !=
+          normalize_multiline(plan.merge_request_description) ->
+        {:error,
+         {:remote_merge_request_provenance_mismatch, issue_iid,
+          %{
+            merge_request_iid: Map.get(merge_request, "merge_request_iid"),
+            expected_description_digest: short_digest(plan.action_digest),
+            existing_description: "mismatch"
+          }}}
+
+      true ->
+        with :ok <- record_recovered_branch(issue_iid, plan, source_branch),
+             :ok <- record_recovered_commit(issue_iid, plan, source_branch),
+             :ok <- record_recovered_merge_request(issue_iid, plan, merge_request) do
+          :ok
+        end
+    end
+  end
+
+  defp reconcile_remote_branch(issue_iid, plan, source_branch, target_branch)
+       when is_binary(issue_iid) and is_map(plan) and is_map(source_branch) do
+    cond do
+      branch_matches_target_head?(source_branch, target_branch) ->
+        record_recovered_branch(issue_iid, plan, source_branch)
+
+      branch_matches_expected_commit?(source_branch, plan) ->
+        with :ok <- record_recovered_branch(issue_iid, plan, source_branch),
+             :ok <- record_recovered_commit(issue_iid, plan, source_branch) do
+          :ok
+        end
+
+      true ->
+        {:error,
+         {:remote_branch_provenance_mismatch, issue_iid,
+          %{
+            source_branch: plan.source_branch,
+            target_branch: plan.target_branch,
+            branch_commit_id: Map.get(source_branch, "commit_id"),
+            target_commit_id: if(is_map(target_branch), do: Map.get(target_branch, "commit_id"), else: nil),
+            expected_commit_provenance: commit_provenance_token(plan)
+          }}}
+    end
+  end
+
+  defp branch_matches_target_head?(source_branch, target_branch)
+       when is_map(source_branch) and is_map(target_branch) do
+    source_commit_id = Map.get(source_branch, "commit_id")
+    target_commit_id = Map.get(target_branch, "commit_id")
+    is_binary(source_commit_id) and source_commit_id != "" and source_commit_id == target_commit_id
+  end
+
+  defp branch_matches_target_head?(_source_branch, _target_branch), do: false
+
+  defp branch_matches_expected_commit?(source_branch, plan)
+       when is_map(source_branch) and is_map(plan) do
+    token = commit_provenance_token(plan)
+
+    [Map.get(source_branch, "commit_title"), Map.get(source_branch, "commit_message")]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.any?(fn value ->
+      String.contains?(value, token) or normalize_multiline(value) == normalize_multiline(plan.commit_message)
+    end)
+  end
+
+  defp record_recovered_branch(issue_iid, plan, source_branch)
+       when is_binary(issue_iid) and is_map(plan) and is_map(source_branch) do
+    Adapter.record_existing_branch_once(
+      issue_iid,
+      plan.run_fingerprint,
+      plan.source_branch,
+      plan.target_branch,
+      %{
+        "branch_name" => plan.source_branch,
+        "commit_id" => Map.get(source_branch, "commit_id")
+      }
+    )
+  end
+
+  defp record_recovered_commit(issue_iid, plan, source_branch)
+       when is_binary(issue_iid) and is_map(plan) and is_map(source_branch) do
+    commit_opts = [
+      manifest_digest: plan.manifest_digest,
+      action_digest: plan.action_digest
+    ]
+
+    Adapter.record_existing_commit_once(
+      issue_iid,
+      plan.run_fingerprint,
+      plan.source_branch,
+      plan.commit_message,
+      commit_opts,
+      %{
+        "commit_sha" => Map.get(source_branch, "commit_id"),
+        "title" => Map.get(source_branch, "commit_title"),
+        "message" => Map.get(source_branch, "commit_message")
+      }
+    )
+  end
+
+  defp record_recovered_merge_request(issue_iid, plan, merge_request)
+       when is_binary(issue_iid) and is_map(plan) and is_map(merge_request) do
+    Adapter.record_existing_merge_request_once(
+      issue_iid,
+      plan.run_fingerprint,
+      plan.source_branch,
+      plan.target_branch,
+      plan.merge_request_title,
+      %{
+        "merge_request_iid" => Map.get(merge_request, "merge_request_iid"),
+        "merge_request_url" => Map.get(merge_request, "merge_request_url"),
+        "source_branch" => Map.get(merge_request, "source_branch"),
+        "target_branch" => Map.get(merge_request, "target_branch"),
+        "title" => Map.get(merge_request, "title"),
+        "description" => Map.get(merge_request, "description"),
+        "sha" => Map.get(merge_request, "sha")
+      }
+    )
   end
 
   defp fetch_stage4_snapshot(issue_iid) when is_binary(issue_iid) do
@@ -773,7 +936,7 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
     collected_artifact_digest = digest_collected_artifacts(collected_artifacts)
     action_digest = digest_commit_actions(commit_actions)
     no_op = commit_actions == []
-    commit_message = "chore(gitlab): update issue ##{issue_iid} artifacts"
+    commit_message = stage4_commit_message(issue_iid, run_fingerprint, action_digest)
     merge_request_title = "Issue ##{issue_iid}: #{issue.title || "Generated update"}"
 
     merge_request_description =
@@ -858,6 +1021,29 @@ defmodule SymphonyElixir.GitLab.MRWorkflow do
         :ok
     end
   end
+
+  defp stage4_commit_message(issue_iid, run_fingerprint, action_digest)
+       when is_binary(issue_iid) and is_binary(run_fingerprint) and is_binary(action_digest) do
+    "chore(gitlab): update issue ##{issue_iid} artifacts #{commit_provenance_token(run_fingerprint, action_digest)}"
+  end
+
+  defp commit_provenance_token(%{} = plan) do
+    commit_provenance_token(plan.run_fingerprint, plan.action_digest)
+  end
+
+  defp commit_provenance_token(run_fingerprint, action_digest)
+       when is_binary(run_fingerprint) and is_binary(action_digest) do
+    "[stage4:#{sanitize_branch_component(run_fingerprint)}:#{short_digest(action_digest)}]"
+  end
+
+  defp short_digest(digest) when is_binary(digest) do
+    digest
+    |> String.replace(~r/[^[:alnum:]]/u, "")
+    |> String.slice(0, 12)
+  end
+
+  defp normalize_multiline(nil), do: nil
+  defp normalize_multiline(value) when is_binary(value), do: value |> String.replace("\r\n", "\n") |> String.trim()
 
   defp persist_dry_run_plan(issue_iid, canonical_workspace, plan)
        when is_binary(issue_iid) and is_binary(canonical_workspace) and is_map(plan) do

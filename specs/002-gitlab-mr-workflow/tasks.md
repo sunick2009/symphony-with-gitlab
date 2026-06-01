@@ -96,15 +96,14 @@
 ### Tests for User Story 3
 
 - [x] T024 [P] [US3] Add branch reuse and duplicate MR suppression tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-- [ ] T025 [P] [US3] Add restart-safe repository mutation resume tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
-  Note: same-digest dry-run idempotency and changed-digest conflict coverage exist; restart-safe live mutation resume remains incomplete.
+- [x] T025 [P] [US3] Add restart-safe repository mutation resume tests in `elixir/test/symphony_elixir/gitlab_mr_workflow_test.exs`
 - [ ] T026 [US3] Add partial writeback recovery coverage in `elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`
 
 ### Implementation for User Story 3
 
 - [x] T027 [P] [US3] Extend persistent writeback keys for Stage 4 branch, commit, MR, and CI operations in `elixir/lib/symphony_elixir/gitlab/state_store.ex`
-- [ ] T028 [US3] Implement repository mutation lookup and provenance validation in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
-- [ ] T029 [US3] Implement resume-from-first-incomplete-step logic in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T028 [US3] Implement repository mutation lookup and provenance validation in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
+- [x] T029 [US3] Implement resume-from-first-incomplete-step logic in `elixir/lib/symphony_elixir/gitlab/mr_workflow.ex`
 - [ ] T030 [US3] Extend adapter retry and exhausted-failure audit behavior for Stage 4 writeback in `elixir/lib/symphony_elixir/gitlab/client.ex`
 
 **Checkpoint**: Stage 4 repository mutation is restart-safe and duplicate-resistant.

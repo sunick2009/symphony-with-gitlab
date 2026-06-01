@@ -291,10 +291,22 @@ Stage 4 live staging MR behavior:
 - Required manifest entries: `repository_path`, `workspace_source_path`, and
   `action` set to `create` or `update`
 - Expected branch naming: `soc/issue-<iid>/<run-fingerprint>`
-- Expected commit message: `chore(gitlab): update issue #<iid> artifacts`
+- Expected commit message prefix: `chore(gitlab): update issue #<iid> artifacts`
+- Expected commit provenance marker: `[stage4:<run-fingerprint>:<action-digest-prefix>]`
 - Expected MR title: `Issue #<iid>: <issue title>`
 - MR description includes the issue identifier plus the manifest and action
   digests for provenance
+- If local Stage 4 state is missing after a remote branch, commit, or MR was
+  created, Symphony attempts bounded recovery before creating anything new.
+  Safe recovery accepts:
+  - an existing deterministic source branch whose head still matches the target
+    branch
+  - an existing deterministic source branch whose head commit still carries the
+    expected Stage 4 provenance marker
+  - an existing open MR whose source branch, target branch, title, and
+    description still match the planned Stage 4 provenance
+- If an existing branch or MR fails those provenance checks, Symphony blocks
+  live mutation instead of guessing.
 - CI reconciliation fetches the newest relevant MR pipeline for the stored
   source branch and normalizes statuses into `ci-pending`, `ci-running`,
   `ci-success`, `ci-failure`, or `ci-unknown`
@@ -327,8 +339,13 @@ Known limitations:
   not-implemented responses.
 - CI reconciliation is polling-based and only considers the newest relevant MR
   pipeline visible through the GitLab API for the stored source branch.
-- If the disposable staging project has no CI configuration, Stage 4.3 can only
-  validate the no-pipeline path until a pipeline exists.
+- Stage 4.4 hardens restart and retry behavior for partial remote success, but
+  it still depends on deterministic branch names, deterministic commit
+  provenance markers, and local single-node state. Multi-node reconciliation is
+  out of scope.
+- Symphony does not currently fetch full commit diffs back from GitLab during
+  recovery. Commit-only recovery therefore relies on deterministic Stage 4
+  commit provenance markers on the branch head or on a matching open MR.
 - Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
   isolation, and automatic blocking are future phases.
 

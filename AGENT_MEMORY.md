@@ -55,6 +55,9 @@ GitLab issue or comment
 - Stage 4.3 CI reconciliation MVP with newest-pipeline selection, normalized CI
   status classes, state persistence, idempotent issue writeback, and human
   review preservation.
+- Stage 4.3.1 disposable CI validation with real staging success and failure
+  pipelines, idempotent CI comments, open-MR preservation, and preserved token
+  boundaries.
 
 ## Important Implementation Boundaries
 
@@ -80,9 +83,9 @@ GitLab issue or comment
   runner.
 - The live failure path currently proves runner startup failure mapping more
   directly than full model-turn failure behavior.
-- Stage 4 remains staging-validated only. CI reconciliation is polling-based
-  and the current disposable project does not expose a real MR pipeline, so
-  live validation currently proves only the no-pipeline path.
+- Stage 4 remains staging-validated only. CI reconciliation is polling-based,
+  and Stage 4.4 restart-hardening remains single-node because persistent state
+  is still local file-backed state rather than a shared store.
 - Cortex integration, IOC enrichment, responder actions, SOC UI, endpoint
   isolation, automatic blocking, and other production-impacting actions are
   not implemented.
@@ -110,9 +113,8 @@ for staging-validated behavior and limitations.
 
 ## Next Recommended Stage
 
-Stage 4.4 should harden restart-safe reconciliation and broaden live staging
-coverage once the disposable GitLab project has an actual CI pipeline to
-observe.
+Stage 4.4 should harden restart-safe reconciliation for partial remote success,
+local state loss, and safe remote reuse across retries and restarts.
 
 Stage 4 must continue to preserve adapter-owned GitLab mutation. Codex may
 generate patch or artifact content, but adapter-controlled code must keep
@@ -131,11 +133,9 @@ agent process.
 
 ## Recommended Stage 4 Preflight Questions
 
-1. How should Stage 4.4 harden restart-safe reconciliation when remote GitLab
-   mutation succeeds but local state persistence races or fails?
-2. Should CI reconciliation remain polling-based, or is a webhook-assisted path
+1. Should CI reconciliation remain polling-based, or is a webhook-assisted path
    required before broader staging rollout?
-3. What additional staging CI fixtures are required to exercise success,
+2. What additional staging CI fixtures are required to exercise success,
    failure, canceled, and skipped pipelines end to end?
-4. When should issue lifecycle movement beyond `soc::human-review` be specified
+3. When should issue lifecycle movement beyond `soc::human-review` be specified
    for post-review stages, if at all?
