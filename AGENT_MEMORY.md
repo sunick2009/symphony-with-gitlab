@@ -2,9 +2,10 @@
 
 ## Current Project Purpose
 
-This project extends the official OpenAI Symphony codebase with GitLab
-control-plane support. GitLab currently serves as the issue tracker, command
-surface, lifecycle-state source, and adapter-controlled writeback target.
+This project extends the official OpenAI Symphony codebase with a reusable
+GitLab-backed agent orchestration layer. GitLab currently serves as the issue
+tracker, operator command surface, lifecycle-state source, and
+adapter-controlled writeback target.
 
 The current architecture is:
 
@@ -44,13 +45,14 @@ GitLab issue or comment
 
 ## Current Verified Capabilities
 
-- `/soc run` through a GitLab issue Note Hook.
+- `/agent run` through a GitLab issue Note Hook.
+- `/soc run` retained as a backward-compatible alias.
 - Webhook secret validation and line-start command parsing.
 - Queue, claim, orchestrator dispatch, and lifecycle reconciliation.
 - Adapter-owned GitLab issue label transitions and issue-note writeback.
 - Normal completion to `soc::human-review`.
 - Failure mapping to `soc::failed`.
-- Duplicate `/soc run` suppression.
+- Duplicate `/agent run` and `/soc run` suppression.
 - Restart-safe webhook replay suppression using local file-backed state.
 - Persistent suppression of duplicate lifecycle comments and transitions.
 - Bounded retry and audited exhaustion for GitLab writeback operations.
@@ -71,6 +73,9 @@ GitLab issue or comment
 - Stage 4.5 append-only audit events with trace correlation for webhook
   handling, run lifecycle, MR mutation, CI reconciliation, duplicate
   suppression, and recovery paths.
+- Stage 4.5.1 observability polish with structured Logger metadata, a
+  production-facing audit read API, serialized local audit appends, and
+  stronger redaction coverage.
 
 ## Important Implementation Boundaries
 
@@ -78,6 +83,9 @@ GitLab issue or comment
 - Codex agents must not receive GitLab write tokens or webhook secrets.
 - Codex may produce outputs and artifacts, but GitLab mutation must remain
   adapter-controlled.
+- Generic agent orchestration belongs in this repository. Security-specific
+  Cortex, IOC, or SOC workflows should remain in a separate upper-layer
+  application or repository.
 - All implementation must remain clean-room work based on the official
   Symphony repository, official specifications, official GitLab documentation,
   and project-owned design artifacts.
@@ -130,9 +138,11 @@ for staging evidence, milestone scope, and remaining non-production limits.
 
 ## Next Recommended Stage
 
-The GitLab integration milestone is complete for staging-only scope. Any future
-work should begin from explicit production-readiness requirements rather than
-expanding Stage 4 behavior implicitly.
+The GitLab integration milestone is complete for staging-only scope. The
+preferred operator command is now `/agent run`, with `/soc run` retained only
+as a compatibility alias. Any future work should begin from explicit
+production-readiness requirements rather than expanding Stage 4 behavior
+implicitly.
 
 Adapter-owned GitLab mutation remains mandatory. Codex may generate patch or
 artifact content, but adapter-controlled code must keep branch, commit, merge

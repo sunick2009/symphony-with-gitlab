@@ -6,7 +6,7 @@
 
 ## Summary
 
-Extend the completed GitLab control plane with a staging-only Stage 4 workflow where a successful `/soc run` produces adapter-owned repository mutation: collect approved workspace outputs, create or reuse a deterministic source branch, create a batch commit through the GitLab API, open or reuse a merge request, reflect CI status back to the issue, and preserve the existing token boundary and persistent single-node idempotency guarantees.
+Extend the completed GitLab control plane with a staging-only Stage 4 workflow where a successful `/agent run` produces adapter-owned repository mutation: collect approved workspace outputs, create or reuse a deterministic source branch, create a batch commit through the GitLab API, open or reuse a merge request, reflect CI status back to the issue, and preserve the existing token boundary and persistent single-node idempotency guarantees. The legacy `/soc run` command remains a backward-compatible alias.
 
 The core design choice is to keep GitLab repository mutation inside the adapter layer and prefer GitLab API based branch or commit creation over credentialed local `git push`. This reduces credential spread and keeps the existing adapter-owned mutation model coherent, at the cost of narrower repository write semantics and request-size constraints.
 
@@ -126,7 +126,7 @@ See [data-model.md](data-model.md), [contracts/gitlab-stage4-lifecycle.md](contr
 - **Stage 4.2 live MR creation** was validated on 2026-05-31 against the
   disposable staging project using issue `#19`, source branch
   `soc/issue-19/fdabb4c741ea`, commit `eee92b65`, and merge request `!1`.
-- Duplicate `/soc run` on the same issue did not create a second branch,
+- Duplicate `/agent run` on the same issue did not create a second branch,
   commit, merge request, or MR link comment. The adapter instead wrote one
   explanatory comment that the issue was already in a Symphony lifecycle state.
 - **Stage 4.3 CI reconciliation** remains staging-limited by the current

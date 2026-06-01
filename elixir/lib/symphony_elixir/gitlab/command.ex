@@ -23,6 +23,16 @@ defmodule SymphonyElixir.GitLab.Command do
   def parse(_body), do: :ignore
 
   defp command_from_line("/soc" <> rest = raw) when rest == "" or binary_part(rest, 0, 1) in [" ", "\t"] do
+    command_from_prefix(rest, raw)
+  end
+
+  defp command_from_line("/agent" <> rest = raw) when rest == "" or binary_part(rest, 0, 1) in [" ", "\t"] do
+    command_from_prefix(rest, raw)
+  end
+
+  defp command_from_line(_line), do: []
+
+  defp command_from_prefix(rest, raw) do
     rest
     |> String.trim()
     |> String.split(~r/\s+/, parts: 2, trim: true)
@@ -31,8 +41,6 @@ defmodule SymphonyElixir.GitLab.Command do
       [] -> [%__MODULE__{name: "", raw: raw}]
     end
   end
-
-  defp command_from_line(_line), do: []
 
   defp validate_commands(commands) do
     case Enum.find(commands, &(&1.name not in @valid_commands)) do

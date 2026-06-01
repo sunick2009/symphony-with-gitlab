@@ -3,10 +3,12 @@
 ## Scope
 
 This note closes the staging-scoped GitLab integration milestone for the
-Symphony control plane. The completed path is:
+Symphony control plane as a reusable GitLab-backed agent orchestration layer.
+The completed path is:
 
 ```text
-/soc run
+/agent run
+-> /soc run compatibility alias
 -> GitLab webhook validation
 -> adapter-owned queue/claim/run lifecycle
 -> artifact manifest validation
@@ -21,7 +23,8 @@ No new product features are introduced by this closure note.
 ## Completed Capabilities
 
 - GitLab issue and note webhook handling with secret validation
-- `/soc run` parsing and duplicate command suppression
+- `/agent run` parsing with `/soc run` backward-compatible alias support
+- duplicate command suppression across primary and legacy command surfaces
 - adapter-owned issue label transitions and lifecycle comments
 - structured append-only audit events with issue, trace, run, and
   run-fingerprint correlation
@@ -35,6 +38,8 @@ No new product features are introduced by this closure note.
 - idempotent CI success/failure comment writeback
 - deterministic recovery for partial remote success when local state is missing
 - provenance mismatch blocking for unsafe branch or MR reuse
+- local operator timeline queries through `mix gitlab.timeline --issue` and
+  `mix gitlab.timeline --trace`
 
 ## Sanitized Staging Validation Evidence
 
@@ -58,6 +63,9 @@ No new product features are introduced by this closure note.
 - Adapter-owned mutation remains mandatory for branch creation, commit
   creation, merge request creation, issue comments, issue label transitions,
   and CI writeback.
+- This repository remains the generic orchestration layer. Cortex, IOC, or
+  SOC-specific workflows should be developed in a separate repository or
+  upper-layer application.
 - Audit logs remain local and sanitized. They must not store GitLab API tokens,
   webhook secrets, raw prompt content, `.env` values, Codex auth files, or
   full artifact bodies.
@@ -77,6 +85,8 @@ No new product features are introduced by this closure note.
 - Remote-worker token boundary is still validated only for local staging paths,
   not for a real external worker fleet.
 - The milestone is staging validated only. It is not a production rollout.
+- Lifecycle labels remain `soc::*` for compatibility. This milestone does not
+  perform a broad GitLab label migration.
 
 ## Explicit Out Of Scope
 
@@ -88,3 +98,4 @@ No new product features are introduced by this closure note.
 - production GitLab project targeting
 - endpoint isolation or blocking actions
 - multi-node production deployment
+- centralized observability platform or dashboard

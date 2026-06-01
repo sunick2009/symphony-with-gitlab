@@ -139,6 +139,17 @@
 - [x] T039 Run clean-room search checks against `elixir/lib`, `elixir/test`, `elixir/README.md`, and `specs/002-gitlab-mr-workflow`
 - [x] T040 Run Stage 4 disposable staging validation and record sanitized results in `specs/002-gitlab-mr-workflow/quickstart.md`
 
+## Milestone Closure Notes
+
+- Stage 4 was closed with generic `/agent run` support as the preferred
+  operator command surface.
+- `/soc run` remains intentionally preserved as a backward-compatible alias.
+- Lifecycle labels remain `soc::*` in the closed milestone to avoid a risky
+  label migration without a dedicated spec and validation pass.
+- Security-specific Cortex, IOC, and SOC workflows remain explicitly out of
+  scope for this repository and should live in a separate upper-layer
+  application or repository.
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

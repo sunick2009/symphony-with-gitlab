@@ -82,40 +82,44 @@ defmodule SymphonyElixir.GitLab.Webhook do
   defp handle_commands({:error, {:unknown_command, command}}, payload, event_key) do
     Audit.emit("command.parsed", %{
       issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
-      command: command,
+      command_name: command,
+      command_raw: unsupported_command_raw(payload),
       result: "unsupported",
       run_id: event_key
     })
 
     with {:ok, issue_iid} <- issue_iid(payload) do
-      Adapter.create_comment_once(issue_iid, "webhook:#{event_key}:unsupported", "Unsupported Symphony command: `/soc #{command}`.")
+      Adapter.create_comment_once(
+        issue_iid,
+        "webhook:#{event_key}:unsupported",
+        "Unsupported Symphony command: `#{unsupported_command_raw(payload) || "/agent #{command}"}`."
+      )
     end
     |> normalize_writeback_result(:handled)
   end
 
   defp handle_commands({:ok, commands}, payload, event_key) do
-    first_command = commands |> List.first() |> Map.get(:name)
+    first_command = List.first(commands)
 
     Audit.emit("command.parsed", %{
       issue_iid: payload |> issue_iid() |> issue_iid_for_audit(),
-      command: first_command,
+      command_name: first_command.name,
+      command_raw: first_command.raw,
       result: "accepted",
       run_id: event_key
     })
 
-    commands
-    |> List.first()
-    |> handle_command(payload, event_key)
+    handle_command(first_command, payload, event_key)
   end
 
   defp handle_command(%Command{name: "run"}, payload, event_key), do: handle_run_command(payload, event_key)
 
-  defp handle_command(%Command{name: command}, payload, event_key) when command in @not_implemented_commands do
+  defp handle_command(%Command{} = command, payload, event_key) when command.name in @not_implemented_commands do
     with {:ok, issue_iid} <- issue_iid(payload) do
       Adapter.create_comment_once(
         issue_iid,
         "webhook:#{event_key}:not-implemented",
-        "The `/soc #{command}` command is recognized but is not implemented yet."
+        "The `#{command.raw}` command is recognized but is not implemented yet."
       )
     end
     |> normalize_writeback_result(:handled)
@@ -133,7 +137,7 @@ defmodule SymphonyElixir.GitLab.Webhook do
            Adapter.create_comment_once(
              issue_iid,
              "webhook:#{event_key}:accepted",
-             "Symphony accepted `/soc run` and queued this issue for an agent run."
+             "Symphony accepted `/agent run` and queued this issue for an agent run."
            ) do
       Audit.emit("issue.queued", %{issue_iid: issue_iid, run_id: event_key, source: "gitlab"})
       {:ok, :handled}
@@ -236,6 +240,25 @@ defmodule SymphonyElixir.GitLab.Webhook do
   end
 
   defp note_body(payload), do: get_in(payload, ["object_attributes", "note"])
+
+  defp unsupported_command_raw(payload) do
+    payload
+    |> note_body()
+    |> Command.parse()
+    |> case do
+      {:error, {:unknown_command, _command}} ->
+        note_body(payload)
+        |> String.split(~r/\R/, trim: false)
+        |> Enum.find(&String.starts_with?(String.trim_leading(&1), ["/soc", "/agent"]))
+        |> case do
+          nil -> nil
+          line -> String.trim(line)
+        end
+
+      _ ->
+        nil
+    end
+  end
 
   defp issue_iid(payload) do
     [

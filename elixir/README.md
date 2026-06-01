@@ -276,7 +276,7 @@ Writeback retry:
 Sample workflow:
 
 1. Open a GitLab issue.
-2. Comment `/soc run` at the beginning of a line.
+2. Comment `/agent run` at the beginning of a line.
 3. Symphony validates the webhook secret, queues the issue with `soc::queued`,
    and posts an acknowledgement comment.
 4. Polling discovers the queued issue and dispatches an isolated agent run.
@@ -284,6 +284,16 @@ Sample workflow:
 6. Normal completion moves the issue to `soc::human-review` and posts a
    completion comment.
 7. Agent failure moves the issue to `soc::failed` and posts a failure comment.
+
+Command compatibility:
+
+- `/agent run` is the preferred GitLab note command for this repository.
+- `/soc run` remains supported as a legacy compatibility alias.
+- Lifecycle labels remain `soc::*` in the current milestone to avoid a risky
+  label migration during closure.
+- Security-specific Cortex, IOC, or SOC workflows should live in a separate
+  repository or upper-layer application above this generic GitLab-backed agent
+  orchestration layer.
 
 Stage 4 live staging MR behavior:
 
@@ -391,6 +401,7 @@ Token boundary:
 - Local Codex app-server processes are launched with `GITLAB_API_TOKEN` and
   `GITLAB_WEBHOOK_SECRET` removed from their environment. If you add custom
   credentials or wrapper scripts, apply the same boundary explicitly.
+- Credentialed agent-owned `git push` remains disallowed.
 
 Failure recovery:
 

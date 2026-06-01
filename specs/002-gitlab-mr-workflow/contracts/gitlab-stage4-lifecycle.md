@@ -8,7 +8,8 @@ Define the Stage 4 control-plane contract between the orchestrator, the GitLab a
 
 ```text
 GitLab issue
--> /soc run note
+-> /agent run note
+-> /soc run compatibility alias
 -> webhook validation
 -> queue / claim / running lifecycle
 -> Codex agent run in isolated workspace

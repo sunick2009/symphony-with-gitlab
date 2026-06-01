@@ -61,7 +61,8 @@ repository mutation and records a Stage 4 finalization error instead.
 1. Prepare labels and webhook exactly as Stage 3.5 requires.
 2. Add or confirm a disposable repository target branch, typically the default branch.
 3. Produce a bounded artifact manifest at `.symphony/gitlab_artifacts.json`.
-4. Trigger `/soc run` on a staging issue that produces the approved artifact set.
+4. Trigger `/agent run` on a staging issue that produces the approved artifact
+   set. The legacy `/soc run` alias remains valid for compatibility checks.
 5. For the helper-based validation path, you may use:
 
 ```bash
@@ -177,6 +178,9 @@ mix gitlab.timeline --trace <trace_id>
   reconciliation remains out of scope.
 - Audit observability is local-only and staging-oriented. It is not a shared
   audit backend.
+- This repository is positioned as a generic GitLab-backed agent orchestration
+  layer. Security-specific Cortex, IOC, or SOC workflows should remain in a
+  separate repository or upper-layer application.
 
 ## Sanitized Staging Evidence
 

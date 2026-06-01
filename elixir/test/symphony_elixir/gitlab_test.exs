@@ -379,10 +379,15 @@ defmodule SymphonyElixir.GitLabTest do
 
   test "command parser only accepts commands at the beginning of a line" do
     assert :ignore = Command.parse("Please run /soc run later")
+    assert :ignore = Command.parse("Please run /agent run later")
     assert :ignore = Command.parse("/soccer run")
+    assert :ignore = Command.parse("/agentic run")
     assert {:ok, [%Command{name: "run"}]} = Command.parse("/soc run\nnormal text")
+    assert {:ok, [%Command{name: "run", raw: "/agent run"}]} = Command.parse("/agent run\nnormal text")
     assert {:ok, [%Command{name: "status"}]} = Command.parse("intro\n/soc status")
+    assert {:ok, [%Command{name: "status", raw: "/agent status"}]} = Command.parse("intro\n/agent status")
     assert {:error, {:unknown_command, "dance"}} = Command.parse("/soc dance")
+    assert {:error, {:unknown_command, "dance"}} = Command.parse("/agent dance")
   end
 
   test "webhook rejects missing and invalid secrets before writeback" do
@@ -393,13 +398,13 @@ defmodule SymphonyElixir.GitLabTest do
       "x-gitlab-event-uuid" => "event-secret"
     }
 
-    assert {:error, :missing_gitlab_webhook_token} = Webhook.handle(base_headers, note_payload("/soc run"))
-    assert {:error, :invalid_gitlab_webhook_token} = Webhook.handle(Map.put(base_headers, "x-gitlab-token", "wrong"), note_payload("/soc run"))
+    assert {:error, :missing_gitlab_webhook_token} = Webhook.handle(base_headers, note_payload("/agent run"))
+    assert {:error, :invalid_gitlab_webhook_token} = Webhook.handle(Map.put(base_headers, "x-gitlab-token", "wrong"), note_payload("/agent run"))
     refute_receive {:gitlab_labels, "42", _add, _remove}
     refute_receive {:gitlab_comment, "42", _body}
   end
 
-  test "webhook handles soc run with secret validation, idempotency, comment writeback, and label transition" do
+  test "webhook handles agent run with secret validation, idempotency, comment writeback, and label transition" do
     configure_gitlab_webhook_test()
 
     headers = %{
@@ -408,24 +413,48 @@ defmodule SymphonyElixir.GitLabTest do
       "x-gitlab-event-uuid" => "event-1"
     }
 
-    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/soc run"))
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/agent run"))
 
     assert_receive {:gitlab_labels, "42", ["soc::queued"], removed_labels}
     assert "soc::running" in removed_labels
-    assert_receive {:gitlab_comment, "42", "Symphony accepted `/soc run` and queued this issue for an agent run."}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/agent run` and queued this issue for an agent run."}
 
-    assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/soc run"))
+    assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/agent run"))
     refute_receive {:gitlab_labels, "42", _add, _remove}
     refute_receive {:gitlab_comment, "42", _body}
 
-    event_types =
-      Audit.list_events(issue_iid: "42")
-      |> Enum.map(& &1["event_type"])
+    events = Audit.list_events(issue_iid: "42")
+    event_types = Enum.map(events, & &1["event_type"])
+    command_event = Enum.find(events, &(&1["event_type"] == "command.parsed"))
 
     assert "webhook.received" in event_types
     assert "command.parsed" in event_types
     assert "issue.queued" in event_types
     assert "duplicate.suppressed" in event_types
+    assert get_in(command_event, ["details", "command_name"]) == "run"
+    assert get_in(command_event, ["details", "command_raw"]) == "/agent run"
+  end
+
+  test "webhook keeps soc run as a backward-compatible alias" do
+    configure_gitlab_webhook_test()
+
+    headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-soc-alias"
+    }
+
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/soc run"))
+
+    assert_receive {:gitlab_labels, "42", ["soc::queued"], _removed_labels}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/agent run` and queued this issue for an agent run."}
+
+    command_event =
+      Audit.list_events(issue_iid: "42")
+      |> Enum.find(&(&1["event_type"] == "command.parsed"))
+
+    assert get_in(command_event, ["details", "command_name"]) == "run"
+    assert get_in(command_event, ["details", "command_raw"]) == "/soc run"
   end
 
   test "webhook replay remains suppressed after state store restart" do
@@ -437,13 +466,13 @@ defmodule SymphonyElixir.GitLabTest do
       "x-gitlab-event-uuid" => "event-persistent-replay"
     }
 
-    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/soc run"))
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/agent run"))
     assert_receive {:gitlab_labels, "42", ["soc::queued"], _removed_labels}
-    assert_receive {:gitlab_comment, "42", "Symphony accepted `/soc run` and queued this issue for an agent run."}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/agent run` and queued this issue for an agent run."}
 
     restart_gitlab_state_store()
 
-    assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/soc run"))
+    assert {:ok, :duplicate} = Webhook.handle(headers, note_payload("/agent run"))
     refute_receive {:gitlab_labels, "42", _add, _remove}
     refute_receive {:gitlab_comment, "42", _body}
 
@@ -462,7 +491,7 @@ defmodule SymphonyElixir.GitLabTest do
       }
 
       assert {:error, :issue_already_in_lifecycle} =
-               Webhook.handle(headers, note_payload("/soc run", labels: [label], note_id: 2000 + index))
+               Webhook.handle(headers, note_payload("/agent run", labels: [label], note_id: 2000 + index))
 
       assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
       refute_receive {:gitlab_labels, "42", _add, _remove}
@@ -470,6 +499,58 @@ defmodule SymphonyElixir.GitLabTest do
 
     events = Audit.list_events(issue_iid: "42")
     assert Enum.any?(events, &(&1["event_type"] == "duplicate.suppressed"))
+  end
+
+  test "duplicate suppression works across agent and soc run aliases" do
+    configure_gitlab_webhook_test()
+
+    first_headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-cross-alias-1"
+    }
+
+    second_headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-cross-alias-2"
+    }
+
+    assert {:ok, :handled} = Webhook.handle(first_headers, note_payload("/agent run", note_id: 3001))
+    assert_receive {:gitlab_labels, "42", ["soc::queued"], _removed_labels}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/agent run` and queued this issue for an agent run."}
+
+    assert {:error, :issue_already_in_lifecycle} =
+             Webhook.handle(second_headers, note_payload("/soc run", labels: ["soc::queued"], note_id: 3002))
+
+    assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
+    refute_receive {:gitlab_labels, "42", _add, _remove}
+  end
+
+  test "duplicate suppression works across soc and agent run aliases" do
+    configure_gitlab_webhook_test()
+
+    first_headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-cross-alias-3"
+    }
+
+    second_headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-cross-alias-4"
+    }
+
+    assert {:ok, :handled} = Webhook.handle(first_headers, note_payload("/soc run", note_id: 3003))
+    assert_receive {:gitlab_labels, "42", ["soc::queued"], _removed_labels}
+    assert_receive {:gitlab_comment, "42", "Symphony accepted `/agent run` and queued this issue for an agent run."}
+
+    assert {:error, :issue_already_in_lifecycle} =
+             Webhook.handle(second_headers, note_payload("/agent run", labels: ["soc::queued"], note_id: 3004))
+
+    assert_receive {:gitlab_comment, "42", "Symphony cannot queue this issue because it is already in a Symphony lifecycle state."}
+    refute_receive {:gitlab_labels, "42", _add, _remove}
   end
 
   test "audit events redact secret-like fields and omit content bodies" do
@@ -558,9 +639,29 @@ defmodule SymphonyElixir.GitLabTest do
       "x-gitlab-event-uuid" => "event-2"
     }
 
-    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/soc status"))
-    assert_receive {:gitlab_comment, "42", "The `/soc status` command is recognized but is not implemented yet."}
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/agent status"))
+    assert_receive {:gitlab_comment, "42", "The `/agent status` command is recognized but is not implemented yet."}
     refute_receive {:gitlab_labels, "42", _add, _remove}
+  end
+
+  test "webhook reports unsupported agent-prefixed commands with the original command surface" do
+    configure_gitlab_webhook_test()
+
+    headers = %{
+      "x-gitlab-token" => "secret",
+      "x-gitlab-event" => "Note Hook",
+      "x-gitlab-event-uuid" => "event-unsupported-agent"
+    }
+
+    assert {:ok, :handled} = Webhook.handle(headers, note_payload("/agent dance"))
+    assert_receive {:gitlab_comment, "42", "Unsupported Symphony command: `/agent dance`."}
+
+    command_event =
+      Audit.list_events(issue_iid: "42")
+      |> Enum.find(&(&1["event_type"] == "command.parsed" and get_in(&1, ["details", "result"]) == "unsupported"))
+
+    assert get_in(command_event, ["details", "command_name"]) == "dance"
+    assert get_in(command_event, ["details", "command_raw"]) == "/agent dance"
   end
 
   test "webhook rejects closed issues with an adapter-owned comment" do
@@ -572,7 +673,7 @@ defmodule SymphonyElixir.GitLabTest do
       "x-gitlab-event-uuid" => "event-3"
     }
 
-    assert {:error, :closed_issue} = Webhook.handle(headers, note_payload("/soc run", issue_state: "closed"))
+    assert {:error, :closed_issue} = Webhook.handle(headers, note_payload("/agent run", issue_state: "closed"))
     assert_receive {:gitlab_comment, "42", "Symphony cannot run on a closed GitLab issue."}
     refute_receive {:gitlab_labels, "42", _add, _remove}
   end

@@ -12,11 +12,11 @@
 
 ### User Story 1 - Create a Reviewable Merge Request from an Issue (Priority: P1)
 
-A maintainer comments `/soc run` on an eligible GitLab issue and expects Symphony to turn the agent output into a reviewable merge request without allowing the agent process to push branches or hold GitLab write credentials.
+A maintainer comments `/agent run` on an eligible GitLab issue and expects Symphony to turn the agent output into a reviewable merge request without allowing the agent process to push branches or hold GitLab write credentials. The legacy `/soc run` command remains a backward-compatible alias.
 
 **Why this priority**: This is the core Stage 4 value. Without adapter-owned branch, commit, and merge request creation, the workflow stops at local agent output and does not produce a reviewable artifact in GitLab.
 
-**Independent Test**: Run a staged GitLab issue through `/soc run` with a fake or staging-safe artifact bundle and verify that exactly one adapter-owned branch, commit, merge request, and issue note are created for the run.
+**Independent Test**: Run a staged GitLab issue through `/agent run` with a fake or staging-safe artifact bundle and verify that exactly one adapter-owned branch, commit, merge request, and issue note are created for the run. Confirm that the legacy `/soc run` alias triggers the same workflow.
 
 **Acceptance Scenarios**:
 

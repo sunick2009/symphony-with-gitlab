@@ -8,6 +8,7 @@ readonly AGENT_TRACE="${SYMPHONY_STAGE2_AGENT_TRACE:-${RUNTIME_DIR}/agent-env.tr
 readonly FAKE_CODEX="${RUNTIME_DIR}/fake-codex-stage2"
 readonly REAL_CODEX_WRAPPER="${RUNTIME_DIR}/real-codex-stage35"
 readonly DEFAULT_ENV_FILE="elixir/.env"
+readonly DEFAULT_TRIGGER_COMMAND="/agent run"
 
 readonly LABELS=(
   "soc::queued"
@@ -59,6 +60,7 @@ Optional:
   STAGE2_WORKFLOW_FILE
   SYMPHONY_STAGE2_AGENT_TRACE
   STAGE35_CODEX_BIN
+  STAGE2_TRIGGER_COMMAND
 EOF
 }
 
@@ -584,8 +586,11 @@ post_run() {
   local iid
   iid="$(issue_iid "$source_kind")"
 
+  local trigger_command
+  trigger_command="${STAGE2_TRIGGER_COMMAND:-$DEFAULT_TRIGGER_COMMAND}"
+
   curl_json POST "/issues/${iid}/notes" \
-    --data-urlencode "body=/soc run" \
+    --data-urlencode "body=${trigger_command}" \
     >"${EVIDENCE_DIR}/${kind}-run-note.json"
 
   jq '{id, body, created_at, web_url}' "${EVIDENCE_DIR}/${kind}-run-note.json"
@@ -1006,7 +1011,7 @@ render_report() {
     printf '%s\n' '- Live webhook delivery depends on a stable public endpoint that GitLab can reach.'
     printf '%s\n' '- Remote token boundary remains pending unless a remote worker is used.'
     printf '%s\n' '- Persistent state must be backed up or preserved across deployment rollouts.'
-    printf '%s\n' '- Duplicate `/soc run` after terminal handoff is rejected with an adapter-owned explanatory comment.'
+    printf '%s\n' '- Duplicate `/agent run` after terminal handoff is rejected with an adapter-owned explanatory comment. The legacy `/soc run` alias is expected to suppress identically.'
   } >"$report_file"
 
   printf 'REPORT_FILE=%s\n' "$report_file"
