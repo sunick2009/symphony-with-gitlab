@@ -75,7 +75,28 @@ defmodule SymphonyElixir.GitLab.StateStore do
 
   @spec append_audit_event(map()) :: :ok | {:error, term()}
   def append_audit_event(event) when is_map(event) do
-    append_jsonl(audit_log_path(), event)
+    call({:append_audit_event, audit_log_path(), event})
+  end
+
+  @spec read_audit_events() :: [map()]
+  def read_audit_events do
+    case File.read(audit_log_path()) do
+      {:ok, contents} ->
+        contents
+        |> String.split("\n", trim: true)
+        |> Enum.map(fn line ->
+          case Jason.decode(line) do
+            {:ok, %{} = event} -> event
+            _ -> %{"decode_error" => line}
+          end
+        end)
+
+      {:error, :enoent} ->
+        []
+
+      {:error, reason} ->
+        raise "failed to read GitLab audit log: #{inspect(reason)}"
+    end
   end
 
   @spec audit_log_path() :: Path.t()
@@ -133,23 +154,7 @@ defmodule SymphonyElixir.GitLab.StateStore do
   @doc false
   @spec read_audit_events_for_test() :: [map()]
   def read_audit_events_for_test do
-    case File.read(audit_log_path()) do
-      {:ok, contents} ->
-        contents
-        |> String.split("\n", trim: true)
-        |> Enum.map(fn line ->
-          case Jason.decode(line) do
-            {:ok, %{} = event} -> event
-            _ -> %{"decode_error" => line}
-          end
-        end)
-
-      {:error, :enoent} ->
-        []
-
-      {:error, reason} ->
-        raise "failed to read GitLab audit log: #{inspect(reason)}"
-    end
+    read_audit_events()
   end
 
   @impl true
@@ -244,6 +249,10 @@ defmodule SymphonyElixir.GitLab.StateStore do
       end)
 
     {:reply, reply, state}
+  end
+
+  def handle_call({:append_audit_event, path, event}, _from, state) do
+    {:reply, append_jsonl(path, event), state}
   end
 
   defp execute_writeback(path, operation_key, attrs, fun) do

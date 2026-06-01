@@ -326,6 +326,8 @@ Run timeline and audit observability:
 
 - Symphony emits append-only structured GitLab audit events to a local JSONL
   log derived from `tracker.state_path`.
+- Audit appends are serialized through the local `StateStore`. This is intended
+  for one local Symphony deployment, not for multi-node aggregation.
 - Default audit path:
   - if `tracker.state_path` is `/var/lib/symphony/gitlab-control-plane-state.json`
     then the audit log path is
@@ -349,6 +351,9 @@ Run timeline and audit observability:
 mix gitlab.timeline --issue 42
 mix gitlab.timeline --trace <trace_id>
 ```
+
+- These commands are local operator tools. They read the local audit JSONL log
+  only and do not query any centralized observability backend.
 
 `tracker.active_states` controls GitLab polling discovery. Reconciliation also
 recognizes `soc::claimed`, `soc::running`, and `soc::waiting-input` as

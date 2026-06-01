@@ -140,6 +140,8 @@ mix gitlab.timeline --issue 42
 
 - Audit events are appended to a local JSONL file derived from
   `tracker.state_path`.
+- Audit appends are serialized through the local `StateStore`. This is a
+  single-node staging aid, not a centralized audit backend.
 - If `tracker.state_path` is `/tmp/symphony-stage4/gitlab-state.json`, the
   audit log path is `/tmp/symphony-stage4/gitlab-state.audit.jsonl`.
 - Query by issue IID:
@@ -158,6 +160,9 @@ mix gitlab.timeline --trace <trace_id>
 
 - Audit events do not include GitLab API tokens, webhook secrets, raw prompt
   content, full artifact contents, Codex auth files, or `.env` values.
+- `mix gitlab.timeline --issue <iid>` and `mix gitlab.timeline --trace
+  <trace_id>` are local operator tools. They inspect only the local JSONL
+  audit log.
 
 ## Known Limitations
 

@@ -61,6 +61,8 @@ No new product features are introduced by this closure note.
 - Audit logs remain local and sanitized. They must not store GitLab API tokens,
   webhook secrets, raw prompt content, `.env` values, Codex auth files, or
   full artifact bodies.
+- Local audit JSONL writes are serialized through the single-node `StateStore`.
+  This is not a centralized observability platform or shared audit backend.
 - Credentialed agent-owned `git push` remains disallowed.
 - Sanitized local token-boundary traces continued to show
   `GITLAB_API_TOKEN=unset` and `GITLAB_WEBHOOK_SECRET=unset`.

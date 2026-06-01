@@ -477,12 +477,15 @@ defmodule SymphonyElixir.GitLabTest do
 
     :ok =
       Audit.emit("secret.check", %{
-        issue_iid: "42",
-        api_token: "glpat-secret-value",
-        webhook_secret: "top-secret",
-        prompt: "do not keep",
-        artifact_content: "full artifact body",
-        safe_field: "kept"
+        "issue_iid" => "42",
+        "api_token" => "glpat-secret-value",
+        "webhook_secret" => "top-secret",
+        "prompt" => "do not keep",
+        "artifact_content" => "full artifact body",
+        "auth_headers" => %{"authorization" => "Bearer glpat-inner-secret"},
+        ".env_snapshot" => "GITLAB_API_TOKEN=inline-token",
+        "note" => "token=[glpat-visible] GITLAB_API_TOKEN=inline-token GITLAB_WEBHOOK_SECRET=inline-secret",
+        "safe_field" => "kept"
       })
 
     [event] =
@@ -490,11 +493,60 @@ defmodule SymphonyElixir.GitLabTest do
       |> Enum.filter(&(&1["event_type"] == "secret.check"))
 
     details = event["details"]
+    timeline = Audit.format_timeline([event])
+
     assert details["safe_field"] == "kept"
+    assert details["note"] =~ "[REDACTED]"
     refute Map.has_key?(details, "api_token")
     refute Map.has_key?(details, "webhook_secret")
     refute Map.has_key?(details, "prompt")
     refute Map.has_key?(details, "artifact_content")
+    refute Map.has_key?(details, "auth_headers")
+    refute Map.has_key?(details, ".env_snapshot")
+    refute inspect(event) =~ "glpat-secret-value"
+    refute inspect(event) =~ "top-secret"
+    refute inspect(event) =~ "inline-token"
+    refute inspect(event) =~ "inline-secret"
+    refute timeline =~ "glpat-secret-value"
+    refute timeline =~ "GITLAB_API_TOKEN=inline-token"
+    refute timeline =~ "GITLAB_WEBHOOK_SECRET=inline-secret"
+  end
+
+  test "audit logs expose structured logger metadata fields" do
+    configure_gitlab_webhook_test()
+
+    {:ok, context} = Audit.start_trace("42", "run-logger", %{run_fingerprint: "fp-logger"})
+
+    log =
+      capture_log(
+        [metadata: [:gitlab_audit_event, :trace_id, :run_id, :issue_iid, :run_fingerprint], format: "$metadata $message\n"],
+        fn ->
+          :ok = Audit.emit("logger.check", %{issue_iid: "42"})
+        end
+      )
+
+    assert log =~ "gitlab_audit_event=logger.check"
+    assert log =~ "trace_id=#{context["trace_id"]}"
+    assert log =~ "run_id=run-logger"
+    assert log =~ "issue_iid=42"
+    assert log =~ "run_fingerprint=fp-logger"
+  end
+
+  test "audit events are serialized as ordered valid JSONL" do
+    configure_gitlab_webhook_test()
+
+    {:ok, _context} = Audit.start_trace("42", "run-order", %{run_fingerprint: "fp-order"})
+
+    :ok = Audit.emit("order.one", %{issue_iid: "42", sequence: 1})
+    :ok = Audit.emit("order.two", %{issue_iid: "42", sequence: 2})
+    :ok = Audit.emit("order.three", %{issue_iid: "42", sequence: 3})
+
+    events =
+      StateStore.read_audit_events()
+      |> Enum.filter(&(&1["issue_iid"] == "42"))
+
+    assert Enum.map(events, & &1["event_type"]) == ["order.one", "order.two", "order.three"]
+    assert Enum.map(events, &get_in(&1, ["details", "sequence"])) == [1, 2, 3]
   end
 
   test "webhook parses recognized but unimplemented commands without dispatching" do

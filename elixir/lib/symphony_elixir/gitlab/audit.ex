@@ -79,7 +79,7 @@ defmodule SymphonyElixir.GitLab.Audit do
       run_fingerprint: event["run_fingerprint"]
     ]
 
-    Logger.log(level, "gitlab_audit_event", metadata: Enum.reject(metadata, fn {_k, v} -> is_nil(v) end))
+    Logger.log(level, "gitlab_audit_event", Enum.reject(metadata, fn {_k, v} -> is_nil(v) end))
 
     case StateStore.append_audit_event(event) do
       :ok ->
@@ -96,7 +96,7 @@ defmodule SymphonyElixir.GitLab.Audit do
     issue_iid = Keyword.get(opts, :issue_iid)
     trace_id = Keyword.get(opts, :trace_id)
 
-    StateStore.read_audit_events_for_test()
+    StateStore.read_audit_events()
     |> Enum.filter(fn event ->
       issue_match? =
         is_nil(issue_iid) or Map.get(event, "issue_iid") == issue_iid
@@ -106,7 +106,9 @@ defmodule SymphonyElixir.GitLab.Audit do
 
       issue_match? and trace_match?
     end)
-    |> Enum.sort_by(&Map.get(&1, "event_at", ""))
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {event, index} -> {Map.get(event, "event_at", ""), index} end)
+    |> Enum.map(fn {event, _index} -> event end)
   end
 
   @spec format_timeline([map()]) :: String.t()
