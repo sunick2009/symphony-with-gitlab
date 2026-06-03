@@ -40,7 +40,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
+    with :ok <- run_health_check(worker_host),
+         {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
@@ -142,6 +143,50 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
+  end
+
+  defp run_health_check(worker_host) do
+    case Config.settings!().codex.health_check_command do
+      command when is_binary(command) and command != "" ->
+        execute_health_check(String.trim(command), worker_host)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp execute_health_check(command, nil) do
+    executable = System.find_executable("bash")
+
+    if is_nil(executable) do
+      {:error, {:codex_health_check_failed, :no_bash, ""}}
+    else
+      case System.cmd(executable, ["-lc", command], stderr_to_stdout: true) do
+        {_output, 0} ->
+          :ok
+
+        {output, status} ->
+          trimmed = String.trim(output)
+          Logger.warning("Codex health check failed status=#{status} output=#{String.slice(trimmed, 0, @max_stream_log_bytes)}")
+          {:error, {:codex_health_check_failed, status, trimmed}}
+      end
+    end
+  end
+
+  defp execute_health_check(command, worker_host) when is_binary(worker_host) do
+    case SSH.run(worker_host, command) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        trimmed = String.trim(output)
+        Logger.warning("Codex health check failed on #{worker_host} status=#{status} output=#{String.slice(trimmed, 0, @max_stream_log_bytes)}")
+        {:error, {:codex_health_check_failed, status, trimmed}}
+
+      {:error, reason} ->
+        Logger.warning("Codex health check SSH error on #{worker_host}: #{inspect(reason)}")
+        {:error, {:codex_health_check_failed, :ssh_error, inspect(reason)}}
+    end
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do

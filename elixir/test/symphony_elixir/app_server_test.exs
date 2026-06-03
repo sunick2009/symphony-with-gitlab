@@ -1432,6 +1432,274 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "health check command exits non-zero blocks session start with a clear error" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-health-check-fail-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "HC-1")
+      health_check = Path.join(test_root, "fake-health-check")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(health_check, """
+      #!/bin/sh
+      printf 'auth token expired\\n'
+      exit 1
+      """)
+
+      File.chmod!(health_check, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_health_check_command: health_check
+      )
+
+      issue = %Issue{
+        id: "issue-hc-fail",
+        identifier: "HC-1",
+        title: "Health check fail",
+        description: "Ensure failing health check blocks session",
+        state: "In Progress",
+        url: "https://example.org/issues/HC-1",
+        labels: []
+      }
+
+      assert {:error, {:codex_health_check_failed, 1, output}} =
+               AppServer.start_session(workspace)
+
+      assert output =~ "auth token expired"
+
+      assert {:error, {:codex_health_check_failed, 1, _}} =
+               AppServer.run(workspace, "blocked by health check", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "health check command exits zero allows session to proceed" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-health-check-pass-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "HC-2")
+      health_check = Path.join(test_root, "fake-health-check-pass")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(health_check, """
+      #!/bin/sh
+      exit 0
+      """)
+
+      File.chmod!(health_check, 0o755)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}';;
+          2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hc2"}}}';;
+          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hc2"}}}';;
+          4) printf '%s\\n' '{"method":"turn/completed"}'; exit 0;;
+          *) exit 0;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_health_check_command: health_check
+      )
+
+      issue = %Issue{
+        id: "issue-hc-pass",
+        identifier: "HC-2",
+        title: "Health check pass",
+        description: "Ensure passing health check allows session",
+        state: "In Progress",
+        url: "https://example.org/issues/HC-2",
+        labels: []
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "allowed by health check", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "absent health check command skips the check and starts the session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-health-check-absent-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "HC-3")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}';;
+          2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hc3"}}}';;
+          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hc3"}}}';;
+          4) printf '%s\\n' '{"method":"turn/completed"}'; exit 0;;
+          *) exit 0;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-hc-absent",
+        identifier: "HC-3",
+        title: "Health check absent",
+        description: "Ensure absent health check does not block session",
+        state: "In Progress",
+        url: "https://example.org/issues/HC-3",
+        labels: []
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "no health check configured", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "health check command is empty string skips the check and starts the session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-health-check-empty-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "HC-4")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}';;
+          2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hc4"}}}';;
+          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hc4"}}}';;
+          4) printf '%s\\n' '{"method":"turn/completed"}'; exit 0;;
+          *) exit 0;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_health_check_command: "   "
+      )
+
+      issue = %Issue{
+        id: "issue-hc-empty",
+        identifier: "HC-4",
+        title: "Health check empty string",
+        description: "Ensure empty health check command does not block session",
+        state: "In Progress",
+        url: "https://example.org/issues/HC-4",
+        labels: []
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "empty health check", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "health check command exits non-zero on ssh worker blocks remote session start" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-health-check-ssh-fail-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh-hc.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      remote_workspace = "/remote/workspaces/HC-SSH"
+
+      File.mkdir_p!(test_root)
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh-hc.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf 'remote auth expired\\n'
+      exit 1
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        codex_command: "fake-remote-codex app-server",
+        codex_health_check_command: "codex whoami"
+      )
+
+      assert {:error, {:codex_health_check_failed, 1, output}} =
+               AppServer.start_session(remote_workspace, worker_host: "remote-worker-01")
+
+      assert output =~ "remote auth expired"
+
+      trace = File.read!(trace_file)
+      assert trace =~ "ARGV:"
+      assert trace =~ "remote-worker-01"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(

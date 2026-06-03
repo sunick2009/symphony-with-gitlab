@@ -1,0 +1,14 @@
+services:
+  symphony:
+    build: .
+    volumes:
+      - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+      - ./workspaces:/workspaces
+      - ./state:/app/state
+      - ~/.codex:/root/.codex:ro
+    environment:
+      - GITLAB_API_TOKEN=${GITLAB_API_TOKEN}
+      - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET}
+    ports:
+      - "4000:4000"
+    restart: unless-stopped

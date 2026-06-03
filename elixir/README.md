@@ -127,6 +127,11 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
+- `codex.health_check_command` is an optional shell command run before each `AppServer.start_session`
+  call. If the command exits non-zero, the session returns `{:error, {:codex_health_check_failed, status, output}}`
+  and no app-server process is spawned. Use this to detect expired auth tokens before wasting a full
+  agent turn. Example: `codex whoami`. Omit or set to empty to skip the check.
+  For SSH workers, the command runs on the remote host via the same SSH transport.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
@@ -429,6 +434,48 @@ local `codex app-server`, verifies that GitLab secrets are absent from the
 child process, and distinguishes deterministic CLI startup failure from a
 model-turn failure. The generated staging workflow explicitly sets
 `codex.approval_policy: never` for app-server version compatibility.
+
+## Docker deployment
+
+For single-machine deployment without installing Elixir, Erlang, or Codex on the host, build and
+run Symphony as a Docker container.
+
+### Prerequisites
+
+- Docker and Docker Compose installed on the host
+- Codex authenticated on the host: run `codex auth` once so `~/.codex/` contains a valid token
+
+### Quick start
+
+```bash
+cp elixir/WORKFLOW.md ./WORKFLOW.md   # then edit for your project
+export GITLAB_API_TOKEN=...
+export GITLAB_WEBHOOK_SECRET=...
+docker compose up --build
+```
+
+`docker-compose.yml` mounts:
+- `./WORKFLOW.md` → `/app/WORKFLOW.md` (read-only)
+- `./workspaces` → `/workspaces` (agent workspace storage)
+- `./state` → `/app/state` (control-plane state)
+- `~/.codex` → `/root/.codex` (read-only; Codex auth token from the host)
+
+The container does not require `OPENAI_API_KEY`. Codex reads its subscription token from the
+mounted `~/.codex` directory written by `codex auth` on the host.
+
+### Auth health check
+
+Configure `codex.health_check_command` in your `WORKFLOW.md` to detect expired tokens before each
+agent run:
+
+```yaml
+codex:
+  command: codex app-server
+  health_check_command: codex whoami
+```
+
+If `codex whoami` exits non-zero, Symphony aborts the session immediately with a clear error log
+rather than failing silently mid-turn.
 
 ## Web dashboard
 
