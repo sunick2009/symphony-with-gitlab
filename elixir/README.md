@@ -13,7 +13,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls a tracker (GitLab or Linear) for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
@@ -21,32 +21,34 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+skills can make raw Linear GraphQL calls (Linear tracker only).
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a terminal state, Symphony stops the active agent for that issue and
+cleans up matching workspaces.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-Linear issue can become a dispatch candidate again after restart.
+issue can become a dispatch candidate again after restart.
 
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+2. Set up tracker credentials:
+   - **GitLab**: export `GITLAB_API_TOKEN` (and optionally `GITLAB_WEBHOOK_SECRET`).
+     See the [GitLab control-plane setup](#gitlab-control-plane-setup) section below.
+   - **Linear**: export `LINEAR_API_KEY` from Settings → Security & access → Personal API keys.
+3. Copy this directory's `WORKFLOW.md` to your repo and set `tracker.kind` to match your tracker.
+4. Customize the `WORKFLOW.md` for your project:
+   - **GitLab**: set `tracker.project_slug` to your GitLab project path (e.g. `group/project`),
+     configure the `soc::*` label set, and set `tracker.active_states` / `tracker.terminal_states`.
+   - **Linear**: set `tracker.project_slug` to your project slug from the project URL. Note that
+     this repo's built-in `WORKFLOW.md` depends on non-standard Linear issue statuses: "Rework",
+     "Human Review", and "Merging" — customize them in Team Settings → Workflow in Linear.
+5. Optionally copy skills to your repo:
+   - `commit`, `push`, `pull`, `land` for git/PR flows.
+   - `linear` if using Linear — it requires Symphony's `linear_graphql` app-server tool.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -499,18 +501,24 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
+Run the real external end-to-end test only when you want Symphony to launch a real `codex
+app-server` session against a live tracker:
 
 ```bash
 cd elixir
+# For GitLab e2e:
+export GITLAB_API_TOKEN=...
+export GITLAB_WEBHOOK_SECRET=...
+make e2e
+
+# For Linear e2e:
 export LINEAR_API_KEY=...
 make e2e
 ```
 
 Optional environment variables:
 
-- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
+- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E` (Linear only)
 - `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
 `make e2e` runs two live scenarios:
@@ -524,10 +532,6 @@ over real SSH, then runs the same orchestration flow against those worker addres
 the transport representative without depending on long-lived external machines.
 
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
-
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
-Linear issue, then marks the project completed so the run remains visible in Linear.
 
 ## FAQ
 
