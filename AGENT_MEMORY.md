@@ -42,6 +42,16 @@ GitLab issue or comment
 - **Stage 4.5: Run timeline and audit observability.** Added structured audit
   events, trace and run correlation, append-only local audit logs, structured
   logger metadata, and a local timeline query path for GitLab runs.
+- **Stage 003: Docker single-machine deployment** (`specs/003-docker-deployment`).
+  Multi-stage Dockerfile (builder + runtime on the same `hexpm/elixir` image so
+  ERTS matches the escript), plus an optional `codex.health_check_command`
+  pre-flight that detects Codex auth failures before an agent run starts.
+- **Stage 004: Per-turn hooks and multi-phase workflow**
+  (`specs/004-per-turn-hooks`). Added `before_turn`/`after_turn` workspace hooks
+  that fire around every Codex turn (not just once per run), enabling a
+  plan-first-then-execute workflow where the plan and each phase's progress sync
+  to GitLab between turns instead of only at run end. Validated end-to-end
+  against real Codex on live staging.
 
 ## Current Verified Capabilities
 
@@ -76,6 +86,16 @@ GitLab issue or comment
 - Stage 4.5.1 observability polish with structured Logger metadata, a
   production-facing audit read API, serialized local audit appends, and
   stronger redaction coverage.
+- Stage 004 per-turn workspace hooks (`before_turn`/`after_turn`) invoked around
+  each Codex turn in `agent_runner.ex` `do_run_codex_turns/9`, with full ordering
+  `before_run → (before_turn → turn → after_turn) × N → after_run`. Per-turn hooks
+  are non-fatal and backward-compatible (unset = no-op).
+- Stage 004 multi-phase GitLab workflow (`elixir/WORKFLOW.gitlab.md`): planning
+  mode writes `output/workpad.md`; execution mode runs one phase per turn with
+  evidence enforced in `output/evidence/phase-N.md`; a single workpad comment is
+  PUT-updated in the issue each turn; completion (`output/.state/completed`) moves
+  the issue to `soc::human-review`. Validated e2e with real Codex (issues #32/#33):
+  plan appears before execution, phases update progressively, run stops cleanly.
 
 ## Important Implementation Boundaries
 
@@ -92,6 +112,29 @@ GitLab issue or comment
 - Reference-only repository code, tests, documentation, comments, internal
   names, and file structure must not be copied or mechanically translated.
 - Specification updates must precede new lifecycle or writeback behavior.
+
+## Multi-Phase Workflow Gotchas (learned from Stage 004 e2e)
+
+These are non-obvious requirements for the per-turn multi-phase workflow. Future
+agents editing `WORKFLOW.gitlab.md` or the turn loop must preserve them:
+
+- **`active_states` must include `soc::running`.** The agent works while the issue
+  is `soc::running`; if it is absent from `active_states`, the per-turn continuation
+  check stops the loop after the planning turn and no phases execute. The poller's
+  claim/running guards prevent re-dispatch, so including it is safe.
+- **Evidence-validation regex must anchor to the checklist bullet**
+  (`(?m)^\s*-\s*\[x\]\s*[Pp]hase\s*(\d+)`). A loose `[x].*?phase(\d+)` matches prose
+  that mentions both tokens and falsely flags unchecked phases as complete.
+- **Completion stop**: `after_turn` moves the issue to `soc::human-review` when
+  `output/.state/completed` exists; otherwise the loop runs to `max_turns` and burns
+  empty turns (real Codex cost).
+- **Prompt files must not be split with `~r/\R/`.** `Workflow.split_front_matter`
+  uses `~r/\r\n|\r|\n/`; `\R` matches the NEL byte 0x85 mid-character in multibyte
+  UTF-8 (e.g. 先 = E5 85 88), corrupting non-ASCII prompts and crashing
+  `Jason.encode!` at codex turn start.
+- The agent process has no GitLab token, so it cannot move labels itself; all GitLab
+  mutation (workpad comment, label transitions) happens in the `after_turn` hook,
+  which runs with adapter credentials.
 
 ## Current Known Limitations
 
@@ -115,7 +158,16 @@ GitLab issue or comment
 
 ## Current Validation Status
 
-The completed GitLab integration milestone passed the full Elixir validation
+Stage 004 (per-turn hooks + multi-phase workflow) passed the full Elixir test
+suite (315 tests, 0 failures, 2 Docker-only skips) and was validated end-to-end
+against real Codex on live staging: the plan posts to GitLab after the planning
+turn (before execution), each phase progressively updates the same workpad
+comment via PUT, evidence is enforced, and the run stops cleanly at
+`soc::human-review` without re-dispatch. Three integration gaps and one UTF-8
+prompt-corruption bug were found and fixed during that run; see the
+"Multi-Phase Workflow Gotchas" section and `specs/004-per-turn-hooks/spec.md`.
+
+The earlier GitLab integration milestone passed the full Elixir validation
 path, including formatting, targeted GitLab tests, the full test suite, specs
 checks, diff checks, clean-room searches, and sanitized live staging
 assertions. See
@@ -135,6 +187,11 @@ for staging evidence, milestone scope, and remaining non-production limits.
 7. [`elixir/test/symphony_elixir/gitlab_test.exs`](elixir/test/symphony_elixir/gitlab_test.exs)
 8. [`elixir/test/symphony_elixir/gitlab_lifecycle_test.exs`](elixir/test/symphony_elixir/gitlab_lifecycle_test.exs)
 9. [`specs/001-gitlab-control-plane/live-staging-validation.md`](specs/001-gitlab-control-plane/live-staging-validation.md)
+10. [`AGENTS.md`](AGENTS.md) — multi-phase workflow model and hook timing
+11. [`specs/004-per-turn-hooks/spec.md`](specs/004-per-turn-hooks/spec.md) — per-turn hooks + e2e findings
+12. [`elixir/WORKFLOW.gitlab.md`](elixir/WORKFLOW.gitlab.md) — canonical multi-phase workflow template
+13. [`elixir/lib/symphony_elixir/agent_runner.ex`](elixir/lib/symphony_elixir/agent_runner.ex) — per-turn hook invocation
+14. [`elixir/lib/symphony_elixir/workspace.ex`](elixir/lib/symphony_elixir/workspace.ex) — hook runners
 
 ## Next Recommended Stage
 

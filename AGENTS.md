@@ -16,8 +16,27 @@ The workflow enforces structured multi-phase execution: planning → execution �
   current workpad state, executes the next unchecked Phase, writes real output to
   `output/evidence/phase-N.md`, updates the workpad, then ends the turn.
 - **`after_turn` hook** validates that every checked `[x] Phase N` has a corresponding
-  `output/evidence/phase-N.md` (> 20 bytes). Missing evidence causes the hook to fail
-  and skips the GitLab workpad comment update for that turn.
+  `output/evidence/phase-N.md` (> 20 bytes), then PUT-updates a single persistent workpad
+  comment in the GitLab issue. Missing evidence fails the hook and skips that turn's update.
+- **Completion**: when the agent writes `output/.state/completed`, `after_turn` moves the
+  issue to `soc::human-review`, which stops the per-turn loop on the next continuation check.
+
+### Required config for multi-phase (learned from e2e — do not omit)
+
+- **`active_states` MUST include `soc::running`.** Symphony moves the issue
+  `soc::queued → soc::running` when the agent starts. The per-turn continuation check
+  (`continue_with_issue?`) only keeps iterating while the issue is in `active_states`; if
+  `soc::running` is missing, the loop stops after the planning turn and phases never run.
+  The poller's claim/running guards (`should_dispatch_issue?`) prevent re-dispatch, so
+  including `soc::running` is safe.
+- **Evidence-validation regex must anchor to the checklist bullet**:
+  `(?m)^\s*-\s*\[x\]\s*[Pp]hase\s*(\d+)`. A loose `[x].*?phase(\d+)` matches prose that
+  merely mentions both `[x]` and `phase-N` (e.g. a phase's own completion criteria) and
+  falsely flags unchecked phases as done.
+- **Workflow prompt files are read by `Workflow.split_front_matter`**, which splits on
+  `~r/\r\n|\r|\n/` (NOT `~r/\R/`). `\R` matches the NEL byte 0x85, which appears mid-character
+  in many multibyte UTF-8 sequences (先 = E5 85 88) and corrupts non-ASCII prompts. Keep
+  any prompt-splitting line-terminator-only.
 
 ### Hook timing (per-turn vs per-run)
 
