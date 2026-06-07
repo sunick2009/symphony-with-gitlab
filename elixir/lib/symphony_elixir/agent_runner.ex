@@ -89,6 +89,9 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  # worker_host is threaded explicitly (not read from opts) because opts[:worker_host]
+  # is only the *preferred* host; selected_worker_host/2 resolves the actual one, and
+  # the per-turn hooks must run on that resolved host.
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 

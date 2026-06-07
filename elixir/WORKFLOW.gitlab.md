@@ -1,4 +1,31 @@
 ---
+# =============================================================================
+# Symphony GitLab multi-phase workflow (plan-first-then-execute).
+#
+# Flow: /agent run -> planning turn writes output/workpad.md -> one phase per
+# execution turn, each writing output/evidence/phase-N.md and updating a single
+# GitLab workpad comment -> output/.state/completed -> soc::human-review.
+#
+# Hooks fire as: before_run -> (before_turn -> turn -> after_turn) * N -> after_run.
+# before_turn/after_turn run once per Codex turn (see specs/004-per-turn-hooks).
+#
+# Invariants proven necessary by live e2e — DO NOT change without re-testing:
+#   1. active_states MUST include soc::running. The agent works while the issue
+#      is soc::running; if it is not "active", the per-turn continuation stops
+#      after planning and no phase runs. Poller claim/running guards stop any
+#      double-dispatch, so this is safe.
+#   2. The after_turn evidence regex is anchored to the checklist bullet
+#      (^- [x] Phase N). A loose [x].*?phase(\d+) matches prose mentioning both
+#      tokens and falsely marks phases done.
+#   3. after_turn moves the issue to soc::human-review only when
+#      output/.state/completed exists, so the loop stops as soon as work is done
+#      instead of burning empty turns up to max_turns.
+#   4. The agent process has NO GitLab token (stripped at the boundary); every
+#      GitLab mutation here runs in hooks, which carry adapter credentials.
+#   5. This prompt is Chinese (multibyte UTF-8). Symphony reads it with
+#      Workflow.split_front_matter, which splits on \r\n|\r|\n — never ~r/\R/,
+#      which would corrupt the NEL byte 0x85 inside characters like 先 (E5 85 88).
+# =============================================================================
 tracker:
   kind: gitlab
   endpoint: $GITLAB_ENDPOINT
