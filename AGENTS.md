@@ -12,18 +12,28 @@ The workflow enforces structured multi-phase execution: planning → execution �
 
 - **Planning mode** (no `CONTEXT.md` in workspace): Codex analyzes the issue and writes
   `output/workpad.md` with a phased checklist. It ends the turn without executing.
-- **Execution mode** (`CONTEXT.md` present, injected by `before_run` hook): Codex reads
+- **Execution mode** (`CONTEXT.md` present, injected by `before_turn` hook): Codex reads
   current workpad state, executes the next unchecked Phase, writes real output to
   `output/evidence/phase-N.md`, updates the workpad, then ends the turn.
-- **`after_run` hook** validates that every checked `[x] Phase N` has a corresponding
+- **`after_turn` hook** validates that every checked `[x] Phase N` has a corresponding
   `output/evidence/phase-N.md` (> 20 bytes). Missing evidence causes the hook to fail
-  and prevents the GitLab workpad comment from being updated.
+  and skips the GitLab workpad comment update for that turn.
 
-### Known architectural limitation
+### Hook timing (per-turn vs per-run)
 
-`before_run` and `after_run` hooks are called once per agent run (not between turns).
-The GitLab workpad comment is updated only after all turns complete — not after each
-individual phase. Per-turn updates require changes to `agent_runner.ex`.
+Symphony runs workspace hooks at two granularities:
+
+- **Per-run** (once per agent run): `after_create`, `before_run`, `after_run`, `before_remove`.
+- **Per-turn** (once per Codex turn): `before_turn`, `after_turn`. Implemented in
+  `agent_runner.ex` `do_run_codex_turns/9`, wrapping each `AppServer.run_turn` call.
+
+The full ordering for an N-turn run is:
+`before_run → (before_turn → turn → after_turn) × N → after_run`.
+
+Per-turn hooks are **non-fatal**: a failure is logged but never aborts the run (they are
+observability/sync points, and touch the network every turn). This is what makes
+"plan first, then execute" work — the plan written in turn 1 syncs to GitLab via
+`after_turn` before turn 2 begins. See `specs/004-per-turn-hooks/spec.md`.
 
 ### Spec-kit integration (future)
 

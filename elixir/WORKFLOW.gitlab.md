@@ -35,18 +35,23 @@ hooks:
   timeout_ms: 300000
   after_create: |
     mkdir -p output/.state output/evidence output/artifacts
-  before_run: |
+  # before_turn runs before EVERY turn: it injects the current workpad into
+  # CONTEXT.md so each execution turn sees the latest plan/progress state.
+  before_turn: |
     if [ -f output/workpad.md ]; then
       echo "=== SYMPHONY WORKPAD CONTEXT ===" > CONTEXT.md
       cat output/workpad.md >> CONTEXT.md
       echo "" >> CONTEXT.md
       echo "=== EXECUTION MODE ===" >> CONTEXT.md
       echo "Read the workpad above. Find the first unchecked Phase and execute it." >> CONTEXT.md
-      echo "[before_run] injected workpad ($(wc -l < output/workpad.md) lines) into CONTEXT.md"
+      echo "[before_turn] injected workpad ($(wc -l < output/workpad.md) lines) into CONTEXT.md"
     else
-      echo "[before_run] no workpad yet — planning mode"
+      echo "[before_turn] no workpad yet — planning mode"
     fi
-  after_run: |
+  # after_turn runs after EVERY turn: it validates evidence and syncs the workpad
+  # to GitLab immediately, so the plan appears after turn 1 (planning) and each
+  # phase's progress appears as soon as that phase completes.
+  after_turn: |
     [ -f output/workpad.md ] || exit 0
     _IID="${PWD##*_}"
     _ENC=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['GITLAB_PROJECT_SLUG'],safe=''))")

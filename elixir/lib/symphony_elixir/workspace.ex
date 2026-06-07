@@ -193,6 +193,39 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec run_before_turn_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
+  def run_before_turn_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+    run_optional_per_turn_hook(Config.settings!().hooks.before_turn, "before_turn", workspace, issue_or_identifier, worker_host)
+  end
+
+  @spec run_after_turn_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
+  def run_after_turn_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+    run_optional_per_turn_hook(Config.settings!().hooks.after_turn, "after_turn", workspace, issue_or_identifier, worker_host)
+  end
+
+  # Per-turn hooks are observability/sync points: failures are logged but never abort the run.
+  defp run_optional_per_turn_hook(command, hook_name, workspace, issue_or_identifier, worker_host) do
+    case blank_to_nil(command) do
+      nil ->
+        :ok
+
+      command ->
+        issue_context = issue_context(issue_or_identifier)
+
+        run_hook(command, workspace, issue_context, hook_name, worker_host)
+        |> ignore_hook_failure()
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(command) when is_binary(command) do
+    case String.trim(command) do
+      "" -> nil
+      _ -> command
+    end
+  end
+
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
     Config.settings!().workspace.root
     |> Path.join(safe_id)

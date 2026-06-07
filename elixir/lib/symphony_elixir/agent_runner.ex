@@ -82,15 +82,19 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns)
       after
         AppServer.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+
+    # before_turn fires before every turn (including turn 1) so the workpad/plan
+    # written by a prior turn is injected into the workspace before Codex runs again.
+    Workspace.run_before_turn_hook(workspace, issue, worker_host)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
@@ -100,6 +104,10 @@ defmodule SymphonyElixir.AgentRunner do
              on_message: codex_message_handler(codex_update_recipient, issue)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+
+      # after_turn fires after every completed turn so progress (plan, evidence)
+      # syncs to the tracker before the next turn begins, not only at run end.
+      Workspace.run_after_turn_hook(workspace, issue, worker_host)
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
@@ -112,6 +120,7 @@ defmodule SymphonyElixir.AgentRunner do
             codex_update_recipient,
             opts,
             issue_state_fetcher,
+            worker_host,
             turn_number + 1,
             max_turns
           )

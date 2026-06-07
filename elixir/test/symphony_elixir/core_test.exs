@@ -1377,6 +1377,239 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner runs per-turn hooks around every turn in order" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-per-turn-hooks-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
+            ;;
+          4)
+            printf 'TURN\\n' >> "$trace_file"
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf 'TURN\\n' >> "$trace_file"
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        hook_before_run: ~s(printf 'before_run\\n' >> "$SYMP_TEST_CODEx_TRACE"),
+        hook_before_turn: ~s(printf 'before_turn\\n' >> "$SYMP_TEST_CODEx_TRACE"),
+        hook_after_turn: ~s(printf 'after_turn\\n' >> "$SYMP_TEST_CODEx_TRACE"),
+        hook_after_run: ~s(printf 'after_run\\n' >> "$SYMP_TEST_CODEx_TRACE"),
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3
+      )
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:per_turn_hook_fetch_count, 0) + 1
+        Process.put(:per_turn_hook_fetch_count, attempt)
+        state = if attempt == 1, do: "In Progress", else: "Done"
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-per-turn",
+             identifier: "MT-PT",
+             title: "Per-turn hooks",
+             description: "Active after first turn",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-per-turn",
+        identifier: "MT-PT",
+        title: "Per-turn hooks",
+        description: "Active after first turn",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-PT",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+
+      markers =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&(&1 in ["before_run", "before_turn", "after_turn", "after_run", "TURN"]))
+
+      # Two turns ran (active after turn 1, done after turn 2).
+      assert Enum.count(markers, &(&1 == "TURN")) == 2
+      assert Enum.count(markers, &(&1 == "before_turn")) == 2
+      assert Enum.count(markers, &(&1 == "after_turn")) == 2
+      assert Enum.count(markers, &(&1 == "before_run")) == 1
+      assert Enum.count(markers, &(&1 == "after_run")) == 1
+
+      # Full ordering: before_run → (before_turn → turn → after_turn) × 2 → after_run
+      assert markers == [
+               "before_run",
+               "before_turn",
+               "TURN",
+               "after_turn",
+               "before_turn",
+               "TURN",
+               "after_turn",
+               "after_run"
+             ]
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner continues turns even when a per-turn hook fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-per-turn-hook-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
+            ;;
+          4)
+            printf 'TURN\\n' >> "$trace_file"
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-fail-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf 'TURN\\n' >> "$trace_file"
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-fail-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        # after_turn always fails — the run must still proceed to the next turn.
+        hook_after_turn: ~s(printf 'after_turn\\n' >> "$SYMP_TEST_CODEx_TRACE"; exit 1),
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3
+      )
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:per_turn_hook_failure_fetch_count, 0) + 1
+        Process.put(:per_turn_hook_failure_fetch_count, attempt)
+        state = if attempt == 1, do: "In Progress", else: "Done"
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-hook-fail",
+             identifier: "MT-HF",
+             title: "Hook failure tolerance",
+             description: "Active after first turn",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-hook-fail",
+        identifier: "MT-HF",
+        title: "Hook failure tolerance",
+        description: "Active after first turn",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-HF",
+        labels: []
+      }
+
+      # A failing after_turn hook must not abort the run.
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+
+      markers =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&(&1 in ["after_turn", "TURN"]))
+
+      assert Enum.count(markers, &(&1 == "TURN")) == 2
+      assert Enum.count(markers, &(&1 == "after_turn")) == 2
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner stops continuing once agent.max_turns is reached" do
     test_root =
       Path.join(
