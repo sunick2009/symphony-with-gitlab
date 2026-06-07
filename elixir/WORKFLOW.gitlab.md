@@ -8,7 +8,10 @@ tracker:
   state_path: /var/lib/symphony/gitlab-control-plane-state.json
   writeback_max_attempts: 3
   writeback_base_backoff_ms: 250
-  active_states: ["soc::queued"]
+  # soc::running must be active so the per-turn continuation keeps iterating
+  # phases while the agent works; the run_blocking/claim guards prevent the
+  # poller from re-dispatching an issue that already has a live agent.
+  active_states: ["soc::queued", "soc::running"]
   terminal_states: ["soc::done", "soc::failed"]
 
 polling:
@@ -56,7 +59,7 @@ hooks:
     _IID="${PWD##*_}"
     _ENC=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['GITLAB_PROJECT_SLUG'],safe=''))")
     _API="${GITLAB_ENDPOINT%/}/api/v4/projects/${_ENC}"
-    python3 -c "import re,os,sys; wp=open('output/workpad.md').read(); phases=re.findall(r'\[x\].*?[Pp]hase.?(\d+)',wp); [sys.exit(1) or print(f'FAIL: Phase {n} done without evidence',file=sys.stderr) for n in phases if not os.path.exists(f'output/evidence/phase-{n}.md') or os.path.getsize(f'output/evidence/phase-{n}.md')<20]" || exit 1
+    python3 -c "import re,os,sys; wp=open('output/workpad.md').read(); phases=re.findall(r'(?m)^\s*-\s*\[x\]\s*[Pp]hase\s*(\d+)',wp); [sys.exit(1) or print(f'FAIL: Phase {n} done without evidence',file=sys.stderr) for n in phases if not os.path.exists(f'output/evidence/phase-{n}.md') or os.path.getsize(f'output/evidence/phase-{n}.md')<20]" || exit 1
     python3 -c "import json; body=open('output/workpad.md').read(); open('/tmp/_wb.json','w').write(json.dumps({'body':body}))"
     if [ -f output/.state/workpad_comment_id ]; then
       _NID=$(cat output/.state/workpad_comment_id)
@@ -74,6 +77,11 @@ hooks:
       python3 -c "import json,base64,sys; d={'branch':sys.argv[1],'start_branch':'main','commit_message':'agent evidence','content':base64.b64encode(open(sys.argv[2],'rb').read()).decode(),'encoding':'base64'}; open('/tmp/_ev.json','w').write(json.dumps(d))" "agent-results/issue-${_IID}" "$_EV"
       curl -sf -X POST -H "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" -H "Content-Type: application/json" -d @/tmp/_ev.json "${_API}/repository/files/${_FE}" > /dev/null 2>&1 && echo "[evidence] pushed ${_FN}" || true
     done
+    # When the agent signals completion, move the issue to human-review so the
+    # per-turn continuation stops immediately instead of burning empty turns.
+    if [ -f output/.state/completed ]; then
+      curl -sf -X PUT -H "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${_API}/issues/${_IID}?add_labels=soc::human-review&remove_labels=soc::running,soc::queued" > /dev/null && echo "[workpad] completed → soc::human-review"
+    fi
 
 observability:
   dashboard_enabled: true
