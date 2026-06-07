@@ -105,3 +105,32 @@ A transient GitLab outage causes an `after_turn` sync to fail mid-run. The opera
 - GitLab sync logic lives in the hook command (shell), not in Elixir; the Elixir change is limited to invoking hooks at the right points. Existing `WORKFLOW.gitlab.md` migrates `before_run`→`before_turn` and `after_run`→`after_turn` to gain per-phase behavior.
 - Non-fatal semantics for per-turn hooks match the existing `after_run` precedent (`ignore_hook_failure`).
 - The Codex app-server session persists across turns (existing behavior); per-turn hooks run on the shared workspace between `AppServer.run_turn` calls without restarting the session.
+
+## E2E Validation (2026-06-07)
+
+Validated against a live self-hosted GitLab with real Codex (issues #32, #33).
+The end-to-end run exposed three integration gaps beyond the core hook
+mechanism; all were fixed and re-validated:
+
+1. **`active_states` must include `soc::running`.** Symphony moves the issue
+   queued→running when the agent starts. With `active_states: ["soc::queued"]`
+   the per-turn continuation check (`continue_with_issue?`) saw the issue as
+   inactive after the planning turn and stopped — phases never ran. The
+   poller's claim/running guards (`should_dispatch_issue?`) prevent
+   re-dispatch, so adding `soc::running` is safe.
+2. **Evidence-validation regex must anchor to the checklist bullet.** The loose
+   `[x].*?phase(\d+)` matched prose that mentioned both `[x]` and `phase-N`
+   (e.g. a phase's own completion criteria), falsely flagging unchecked phases.
+   Anchored to `(?m)^\s*-\s*\[x\]\s*[Pp]hase\s*(\d+)`.
+3. **Completion stop.** Because `soc::running` is active, the loop ran to
+   `max_turns`. `after_turn` now moves the issue to `soc::human-review` once
+   `output/.state/completed` exists, so the loop stops as soon as work is done.
+
+A separate, unrelated bug surfaced in the same run: `Workflow.split_front_matter`
+used `~r/\R/`, corrupting multibyte UTF-8 prompts (NEL byte 0x85). Fixed in
+`workflow.ex` with a dedicated regression test.
+
+**Result:** plan posts to GitLab after the planning turn (before execution),
+each phase progressively updates the same workpad comment via PUT (no
+duplicates), evidence is enforced, and the run ends cleanly at `soc::human-review`
+without re-dispatch.
