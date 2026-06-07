@@ -83,7 +83,11 @@ defmodule SymphonyElixir.Workflow do
   end
 
   defp split_front_matter(content) do
-    lines = String.split(content, ~r/\R/, trim: false)
+    # Split only on real line terminators (CRLF/CR/LF). Do NOT use ~r/\R/, which
+    # also matches the NEL byte 0x85 — that byte appears mid-character in many
+    # multibyte UTF-8 sequences (e.g. 先 = E5 85 88), so \R would split inside a
+    # character and corrupt the text when the lines are rejoined with "\n".
+    lines = String.split(content, ~r/\r\n|\r|\n/, trim: false)
 
     case lines do
       ["---" | tail] ->

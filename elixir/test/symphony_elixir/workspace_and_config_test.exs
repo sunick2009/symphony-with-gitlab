@@ -1233,6 +1233,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.workflow_prompt() == workflow_prompt
   end
 
+  test "workflow prompt preserves multibyte UTF-8 containing the NEL byte 0x85" do
+    # 先 = E5 85 88 has the NEL byte 0x85 mid-character. Splitting front matter
+    # with ~r/\R/ would treat that byte as a line break and corrupt the prompt,
+    # producing invalid UTF-8 that crashes Jason.encode! at codex turn start.
+    workflow_prompt = "首先檢查工作目錄\n第二步先執行任務"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+    prompt = Config.workflow_prompt()
+
+    assert String.valid?(prompt)
+    assert prompt == workflow_prompt
+    # The exact operation that failed in the real agent run must now succeed.
+    assert {:ok, _} = Jason.encode(%{"text" => prompt})
+  end
+
   test "remote workspace lifecycle uses ssh host aliases from worker config" do
     test_root =
       Path.join(
