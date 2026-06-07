@@ -4,6 +4,7 @@ config :phoenix, :json_library, Jason
 
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
+  http: [thousand_island_options: [read_timeout: 15_000]],
   url: [host: "localhost"],
   render_errors: [
     formats: [html: SymphonyElixirWeb.ErrorHTML, json: SymphonyElixirWeb.ErrorJSON],
