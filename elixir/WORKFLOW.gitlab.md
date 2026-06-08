@@ -3,8 +3,9 @@
 # Symphony GitLab multi-phase workflow (plan-first-then-execute).
 #
 # Flow: /agent run -> planning turn writes output/workpad.md -> one phase per
-# execution turn, each writing output/evidence/phase-N.md and updating a single
-# GitLab workpad comment -> output/.state/completed -> soc::human-review.
+# execution turn, each writing output/evidence/phase-N.md, updating a single
+# GitLab workpad comment, and committing the evidence to the agent-results
+# branch -> output/.state/completed -> soc::human-review.
 #
 # Hooks fire as: before_run -> (before_turn -> turn -> after_turn) * N -> after_run.
 # before_turn/after_turn run once per Codex turn (see specs/004-per-turn-hooks).
@@ -25,6 +26,12 @@
 #   5. This prompt is Chinese (multibyte UTF-8). Symphony reads it with
 #      Workflow.split_front_matter, which splits on \r\n|\r|\n — never ~r/\R/,
 #      which would corrupt the NEL byte 0x85 inside characters like 先 (E5 85 88).
+#   6. after_turn pushes ALL phase evidence in ONE atomic /repository/commits
+#      call (not one commit per file), skips files unchanged on the branch, and
+#      truncates anything over EVIDENCE_MAX_BYTES (default 1 MiB). A failed push
+#      is surfaced to stderr and aborts the hook with exit 1 BEFORE the
+#      completion transition, so the issue stays active and the push is retried
+#      next turn — evidence must land on the branch before work is declared done.
 # =============================================================================
 tracker:
   kind: gitlab
@@ -53,12 +60,16 @@ agent:
 
 codex:
   command: codex app-server
-  health_check_command: codex whoami
-  approval_policy:
-    reject:
-      sandbox_approval: true
-      rules: true
-      mcp_elicitations: true
+  # `codex whoami` needs a TTY and exits 1 headless ("stdin is not a terminal"),
+  # which would fail the pre-flight check and block every dispatch in
+  # background/CI/docker. `codex login status` verifies auth tty-free (rc=0).
+  health_check_command: codex login status
+  # codex 0.135 app-server takes approval_policy as an enum
+  # (untrusted | on-failure | on-request | granular | never); the old nested
+  # `reject:` map is rejected with JSON-RPC -32600 and the agent fails on turn 0.
+  # `never` = run fully headless, auto-deny every approval prompt (the intent of
+  # the previous reject-everything map).
+  approval_policy: never
   thread_sandbox: workspace-write
 
 hooks:
@@ -96,14 +107,76 @@ hooks:
       python3 -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$_RESP" > output/.state/workpad_comment_id
       echo "[workpad] created comment #$(cat output/.state/workpad_comment_id)"
     fi
-    for _EV in output/evidence/phase-*.md; do
-      [ -f "$_EV" ] || continue
-      _FN=$(basename "$_EV" .md)
-      _FP="agent-results/issue-${_IID}/$(date -u +%Y%m%dT%H%M%SZ)/${_FN}.md"
-      _FE=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$_FP")
-      python3 -c "import json,base64,sys; d={'branch':sys.argv[1],'start_branch':'main','commit_message':'agent evidence','content':base64.b64encode(open(sys.argv[2],'rb').read()).decode(),'encoding':'base64'}; open('/tmp/_ev.json','w').write(json.dumps(d))" "agent-results/issue-${_IID}" "$_EV"
-      curl -sf -X POST -H "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" -H "Content-Type: application/json" -d @/tmp/_ev.json "${_API}/repository/files/${_FE}" > /dev/null 2>&1 && echo "[evidence] pushed ${_FN}" || true
-    done
+    # Push all phase evidence to the agent-results branch as ONE atomic commit
+    # (/repository/commits, not per-file), skipping unchanged files, truncating
+    # oversized ones (EVIDENCE_MAX_BYTES, default 1 MiB), and SURFACING any API
+    # failure (no silent || true). On failure the issue stays active so the push
+    # is retried on the next turn before completion can proceed.
+    python3 - "$_IID" <<'PUSH_EVIDENCE' || { echo "[after_turn] evidence push failed — issue stays active to retry next turn" >&2; exit 1; }
+    import os, sys, json, base64, glob
+    import urllib.request, urllib.parse, urllib.error
+
+    iid = sys.argv[1]
+    api = os.environ["GITLAB_ENDPOINT"].rstrip("/") + "/api/v4/projects/" + urllib.parse.quote(os.environ["GITLAB_PROJECT_SLUG"], safe="")
+    token = os.environ["GITLAB_API_TOKEN"]
+    branch = "agent-results/issue-" + iid
+    max_bytes = int(os.environ.get("EVIDENCE_MAX_BYTES", "1048576"))
+    q = lambda s: urllib.parse.quote(s, safe="")
+
+    def call(method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(api + path, data=data, method=method,
+            headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def truncate(raw):
+        if len(raw) <= max_bytes:
+            return raw
+        head, tail = int(max_bytes * 0.6), int(max_bytes * 0.3)
+        note = ("\n\n... [truncated %d bytes; original %d > limit %d] ...\n\n"
+                % (len(raw) - head - tail, len(raw), max_bytes)).encode()
+        return raw[:head] + note + raw[-tail:]
+
+    st, _ = call("GET", "/repository/branches/" + q(branch))
+    branch_exists = st == 200
+
+    actions = []
+    for fp in sorted(glob.glob("output/evidence/phase-*.md")):
+        with open(fp, "rb") as fh:
+            content_b64 = base64.b64encode(truncate(fh.read())).decode()
+        file_path = "agent-results/issue-%s/%s" % (iid, os.path.basename(fp))
+        action = "create"
+        if branch_exists:
+            fst, fbody = call("GET", "/repository/files/%s?ref=%s" % (q(file_path), q(branch)))
+            if fst == 200:
+                if json.loads(fbody).get("content", "").strip() == content_b64.strip():
+                    continue  # unchanged on the branch — skip to avoid empty commits
+                action = "update"
+            elif fst != 404:
+                sys.stderr.write("[evidence] lookup failed status=%d path=%s body=%r\n" % (fst, file_path, fbody[:300]))
+                sys.exit(2)
+        actions.append({"action": action, "file_path": file_path,
+                        "content": content_b64, "encoding": "base64"})
+
+    if not actions:
+        print("[evidence] nothing to push (no new or changed phase evidence)")
+        sys.exit(0)
+
+    payload = {"branch": branch, "actions": actions,
+               "commit_message": "agent evidence for issue #%s (%d file(s))" % (iid, len(actions))}
+    if not branch_exists:
+        payload["start_branch"] = "main"
+
+    st, body = call("POST", "/repository/commits", payload)
+    if st not in (200, 201):
+        sys.stderr.write("[evidence] PUSH FAILED status=%d branch=%s body=%r\n" % (st, branch, body[:500]))
+        sys.exit(2)
+    print("[evidence] committed %d file(s) to %s (status=%d)" % (len(actions), branch, st))
+    PUSH_EVIDENCE
     # When the agent signals completion, move the issue to human-review so the
     # per-turn continuation stops immediately instead of burning empty turns.
     if [ -f output/.state/completed ]; then
