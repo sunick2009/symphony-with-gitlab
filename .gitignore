@@ -8,3 +8,20 @@ symphony_py_repo_context_for_codex.md
 # GitLab adapter runtime state must remain outside version control.
 .gitlab-control-plane-state.json
 *.gitlab-control-plane-state.json
+
+# graphify-out
+graphify-out/*
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/graph.json
+
+# elixir
+elixir/_build
+elixir/cover
+elixir/deps
+elixir/doc
+elixir/.fetch
+erl_crash.dump
+*.ez
+*.beam
+elixir/config/*.secret.exs
+elixir/.elixir_ls/
