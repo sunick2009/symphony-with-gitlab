@@ -22,9 +22,17 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          ensure_application_started!: 0
+        ]
 
       setup do
+        ensure_application_started!()
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -74,7 +82,36 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  @doc """
+  Ensures the `:symphony_elixir` application (and its top supervisor) is running
+  before a test proceeds.
+
+  The suite shares the application's long-lived supervised processes
+  (`SymphonyElixir.Supervisor` and its children) and mutates global application
+  state across tests. Under parallel execution this shared churn can
+  intermittently trip the top supervisor's restart intensity; with
+  `start_permanent: false` in the test env, OTP does not restart the
+  application, leaving the named supervisor dead. Without this guard, every
+  subsequent test's `setup` would crash in `stop_default_http_server/0` when it
+  calls `Supervisor.which_children/1` on the missing supervisor.
+
+  Restarting here makes each test independent of prior tests' supervision churn,
+  so the full suite passes regardless of seed/order or `--max-cases`.
+  """
+  def ensure_application_started! do
+    if Process.whereis(SymphonyElixir.Supervisor) == nil do
+      _ = Application.stop(:symphony_elixir)
+      {:ok, _apps} = Application.ensure_all_started(:symphony_elixir)
+    end
+
+    :ok
+  end
+
   def stop_default_http_server do
+    if Process.whereis(SymphonyElixir.Supervisor) == nil do
+      ensure_application_started!()
+    end
+
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false
