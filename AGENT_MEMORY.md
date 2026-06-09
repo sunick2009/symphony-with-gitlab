@@ -97,6 +97,44 @@ GitLab issue or comment
   the issue to `soc::human-review`. Validated e2e with real Codex (issues #32/#33):
   plan appears before execution, phases update progressively, run stops cleanly.
 
+## MVP-0 Devcontainer Runbook (Stage 005)
+
+- Operator runbook: [`docs/mvp0-devcontainer-runbook.md`](docs/mvp0-devcontainer-runbook.md).
+  Covers fresh devcontainer → build → env → Codex/fake-runner check → start
+  Symphony with `--port` → expose webhook (forwarded port / localtunnel) →
+  GitLab disposable staging setup → `/agent run` → observe
+  workpad/evidence/MR/CI/audit timeline → cleanup → troubleshooting.
+- **Devcontainer status:** `.devcontainer/` is git-ignored ("Local editor
+  container experiment"); it is a developer convenience, not a supported
+  deployment artifact. Base image `ghcr.io/openai/codex-universal:latest`;
+  `post-create.sh` installs codex/claude/gemini CLIs; Elixir/Erlang come from
+  `mise` (`elixir/mise.toml`: OTP 28 / Elixir 1.19.5). The **supported**
+  deployment artifact is the root `Dockerfile` + `docker-compose.yml`
+  (Stage 003).
+- **Codex auth for the runbook:** fake-runner/control-plane validation needs no
+  Codex login; the real runner needs `codex login status` rc=0 inside the
+  container. Recommend explicit `CODEX_HOME=/root/.codex`. Never commit Codex
+  auth; never expose `GITLAB_API_TOKEN`/`GITLAB_WEBHOOK_SECRET` to the agent
+  process (adapter strips them at the worker boundary; GitLab writes in
+  `WORKFLOW.gitlab.md` happen in the `after_turn` hook context, not in Codex).
+- **graphify scope:** `graphify-out/` is developer-analysis/generated, NOT
+  runtime-required (nothing in `lib/` reads it). Intentionally tracked:
+  `graphify-out/graph.json` (~2 MB) + `GRAPH_REPORT.md`; everything else under
+  `graphify-out/` (graph.html, `.graphify_*`, cache, dated dirs) is git-ignored.
+  Tracked so agents can `graphify query` a committed snapshot; trade-off is git
+  churn on `graphify update`.
+- **Validation (this devcontainer):** `mix format --check-formatted` (after a
+  one-line format fix to `config/schema.ex`), `mix specs.check`, and
+  `git diff --check` pass; `mix test --seed 0` → 315 tests, 0 failures, 2
+  Docker-only skips. Random/parallel seeds can trigger an order-sensitive app
+  supervisor cascade (`stop_default_http_server` exits) — deterministic ordering
+  and per-file runs pass; not a logic failure. Secret/clean-room scans clean
+  (only `=unset` boundary assertions and test fixtures; reference-only prompt
+  files remain git-ignored).
+- **Non-production limits unchanged:** single-node file-backed state,
+  staging-only, tunnels staging-only, polling-based CI, local-only audit, no
+  Cortex/IOC/responder/SOC UI/auto-merge/production targeting/multi-node.
+
 ## Important Implementation Boundaries
 
 - GitLab write credentials belong only to the GitLab adapter and client layer.
