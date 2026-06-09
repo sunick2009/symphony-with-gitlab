@@ -5,9 +5,26 @@ symphony_py_repo_context_for_codex.md
 # Local editor container experiment. Review before promoting to supported setup.
 .devcontainer/
 
-# GitLab adapter runtime state must remain outside version control.
+# OS / editor cruft
+.DS_Store
+**/.DS_Store
+
+# Secrets and local environment overrides (never commit).
+.env
+.env.*
+!.env.example
+# Codex auth lives outside the repo (CODEX_HOME / ~/.codex); ignore any stray copy.
+.codex/auth.json
+**/auth.json
+
+# GitLab adapter runtime state and audit log must remain outside version control.
 .gitlab-control-plane-state.json
 *.gitlab-control-plane-state.json
+*.audit.jsonl
+
+# Local tunnel artifacts (localtunnel / cloudflared logs).
+*.loca.lt
+cloudflared.log
 
 # graphify-out
 graphify-out/*
