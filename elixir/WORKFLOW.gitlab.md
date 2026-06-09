@@ -59,7 +59,7 @@ agent:
   max_turns: 20
 
 codex:
-  command: codex app-server
+  command: codex --config 'model="gpt-5.1-codex-mini"' --config model_reasoning_effort=medium app-server
   # `codex whoami` needs a TTY and exits 1 headless ("stdin is not a terminal"),
   # which would fail the pre-flight check and block every dispatch in
   # background/CI/docker. `codex login status` verifies auth tty-free (rc=0).

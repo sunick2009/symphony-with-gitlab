@@ -161,7 +161,7 @@ hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
 codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+  command: "$CODEX_BIN --config 'model=\"gpt-5.1-codex-mini\"' --config model_reasoning_effort=medium app-server"
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
