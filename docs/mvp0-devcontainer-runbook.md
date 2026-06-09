@@ -355,12 +355,13 @@ live GitLab project. Each maps to a goal-level assertion:
 | `mix gitlab.timeline` works | `mise exec -- mix gitlab.timeline --issue 42` (prints "No matching GitLab audit events" with an empty log) |
 | State/audit paths outside repo | `tracker.state_path: /var/lib/symphony/...`; confirm with `git check-ignore -v <state_path>` is N/A (it is outside the repo) and that `*.gitlab-control-plane-state.json` is git-ignored |
 
-Quick full local check (deterministic):
+Quick full local check:
 
 ```bash
 cd elixir
 mise exec -- mix format --check-formatted
-mise exec -- mix test --seed 0        # deterministic ordering; see §15 note on random seeds
+mise exec -- mix test                 # passes regardless of seed / --max-cases
+mise exec -- mix test --seed 0        # optional deterministic smoke check
 mise exec -- mix specs.check
 ```
 
@@ -421,7 +422,7 @@ In staging, cleanup is manual and should be done **with Symphony stopped**:
 | Writeback exhausted retries | Inspect the `writebacks` entry in the state file (Symphony stopped), fix the GitLab permission/availability issue, re-trigger with a fresh comment. |
 | `403/404` on GitLab writes | Token lacks `api` scope or the project role can't update issues. Permission errors are surfaced without retry. |
 | Evidence push fails, issue stays active | Intentional: the `after_turn` hook aborts before completion so the push retries next turn. Check stderr for the GitLab API error. |
-| Full `mix test` shows many `stop_default_http_server` exits | Order/load-sensitive cascade: a test stops/exhausts the app supervisor and later files crash in setup. Run `mix test --seed 0` for deterministic ordering (315 tests, 0 failures, 2 skipped). Per-file runs also pass. Not a logic failure. |
+| Full `mix test` shows many `stop_default_http_server` exits | Fixed in Stage 006: test `setup` now self-heals the shared app supervisor (`TestSupport.ensure_application_started!/0`). If you see this on an older checkout, that fix is missing — the suite there is order/load-sensitive; use `mix test --seed 0` or update `test/support/test_support.exs`. |
 
 ---
 

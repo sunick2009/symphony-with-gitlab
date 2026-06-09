@@ -123,14 +123,25 @@ GitLab issue or comment
   `graphify-out/` (graph.html, `.graphify_*`, cache, dated dirs) is git-ignored.
   Tracked so agents can `graphify query` a committed snapshot; trade-off is git
   churn on `graphify update`.
-- **Validation (this devcontainer):** `mix format --check-formatted` (after a
-  one-line format fix to `config/schema.ex`), `mix specs.check`, and
-  `git diff --check` pass; `mix test --seed 0` → 315 tests, 0 failures, 2
-  Docker-only skips. Random/parallel seeds can trigger an order-sensitive app
-  supervisor cascade (`stop_default_http_server` exits) — deterministic ordering
-  and per-file runs pass; not a logic failure. Secret/clean-room scans clean
-  (only `=unset` boundary assertions and test fixtures; reference-only prompt
-  files remain git-ignored).
+- **Validation (this devcontainer):** `mix format --check-formatted`,
+  `mix specs.check`, and `git diff --check` pass; `mix test` → 315 tests, 0
+  failures, 2 Docker-only skips, now passing regardless of seed/`--max-cases`
+  (verified across repeated random-seed parallel runs); `--seed 0` remains an
+  optional deterministic smoke check. Secret/clean-room/encoding scans clean
+  (only `=unset` boundary assertions and test fixtures; no mojibake in committed
+  docs; reference-only prompt files remain git-ignored).
+- **Stage 006 hygiene fixes:** (1) fixed the order/parallelism-sensitive test
+  cascade — the suite shared the app's long-lived supervised processes and
+  mutated global app state concurrently, tripping the top supervisor's restart
+  intensity (with `start_permanent: false` the app was not restarted), so every
+  later test crashed in `stop_default_http_server/0`. Fix is test-only:
+  `TestSupport.ensure_application_started!/0` restarts `:symphony_elixir` in
+  `setup` if the supervisor is gone (no production supervision change).
+  (2) tightened ignores (`.DS_Store`, `.env*`, stray `auth.json`,
+  `*.audit.jsonl`, tunnel artifacts). (3) committed the pre-existing model-config
+  edits (default Codex model gpt-5.5 → gpt-5.1-codex-mini + reasoning medium) as
+  a separate intentional commit with matching test updates. See
+  [[project-test-suite-seed-cascade]].
 - **Non-production limits unchanged:** single-node file-backed state,
   staging-only, tunnels staging-only, polling-based CI, local-only audit, no
   Cortex/IOC/responder/SOC UI/auto-merge/production targeting/multi-node.
